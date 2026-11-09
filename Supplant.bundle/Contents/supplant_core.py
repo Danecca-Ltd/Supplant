@@ -150,6 +150,30 @@ def _highlight_active_joint(token: str) -> bool:
     return False
 
 
+def _push_data_to_palette() -> None:
+    """Send the current mapping data to the palette (idempotent)."""
+    orig_name = repl_name = ""
+    try:
+        orig_name = _mapping.get("orig_occ").name
+        repl_name = _mapping.get("repl_occ").name
+    except Exception:
+        pass
+    refs = _mapping.get("refs", {})
+    auto = (len(refs.get("as_built_joints", [])) +
+            len(refs.get("rigid_groups",    [])) +
+            len(refs.get("contact_sets",    [])))
+    try:
+        joints = _build_joint_data()
+    except Exception:
+        joints = []
+    _send_to_palette("data", {
+        "orig":   orig_name,
+        "repl":   repl_name,
+        "auto":   auto,
+        "joints": joints,
+    })
+
+
 def _open_palette() -> None:
     global _palette
     app      = adsk.core.Application.get()
@@ -162,7 +186,7 @@ def _open_palette() -> None:
         html_url  = "file:///{}".format(html_path.replace("\\", "/"))
         _palette  = palettes.add(
             PALETTE_ID, PALETTE_TITLE, html_url,
-            True, True, True, 320, 440, False)
+            True, True, True, 320, 440, True)
         ph = _PaletteHTMLHandler()
         _palette.incomingFromHTML.add(ph)
         _retained.append(ph)
@@ -297,6 +321,9 @@ class _SetupExecuteHandler(adsk.core.CommandEventHandler):
             refs     = _collect_references(orig_occ, design)
             _init_mapping(orig_occ, repl_occ, refs)
             _open_palette()
+            # Proactively push data in case the palette was already open
+            # and its 'ready' event won't fire again.
+            _push_data_to_palette()
         except Exception:
             adsk.core.Application.get().userInterface.messageBox(
                 traceback.format_exc(), "Supplant execute error")
@@ -317,22 +344,7 @@ class _PaletteHTMLHandler(adsk.core.HTMLEventHandler):
                 pass
 
             if action == "ready":
-                orig_name = repl_name = ""
-                try:
-                    orig_name = _mapping.get("orig_occ").name
-                    repl_name = _mapping.get("repl_occ").name
-                except Exception:
-                    pass
-                refs = _mapping.get("refs", {})
-                auto = (len(refs.get("as_built_joints", [])) +
-                        len(refs.get("rigid_groups",    [])) +
-                        len(refs.get("contact_sets",    [])))
-                _send_to_palette("data", {
-                    "orig":   orig_name,
-                    "repl":   repl_name,
-                    "auto":   auto,
-                    "joints": _build_joint_data(),
-                })
+                _push_data_to_palette()
 
             elif action == "set_active_joint":
                 if not _highlight_active_joint(data.get("token", "")):

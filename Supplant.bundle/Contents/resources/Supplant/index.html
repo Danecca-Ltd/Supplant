@@ -415,7 +415,27 @@ function startPick(token) {
   sendAction('start_pick', JSON.stringify({ token: token }));
 }
 
-/* ── Message bridge from Python ── */
+/* ── Filter buttons ── */
+document.querySelectorAll('.filter-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    state.filter = this.dataset.filter;
+    document.querySelectorAll('.filter-btn').forEach(function(b) {
+      b.classList.toggle('active', b.dataset.filter === state.filter);
+    });
+    renderTable();
+  });
+});
+
+/* ── Execute ── */
+document.getElementById('execute-btn').addEventListener('click', function() {
+  this.disabled = true;
+  setStatus('Executing…');
+  sendAction('execute', '{}');
+});
+
+/* ── Ready ── */
+// fusionJavaScriptHandler must be on window before we call sendAction,
+// so define it first, then signal Python we are ready.
 window.fusionJavaScriptHandler = {
   handle: function(action, dataStr) {
     var data = {};
@@ -427,7 +447,6 @@ window.fusionJavaScriptHandler = {
       state.auto   = data.auto  || 0;
       state.done   = {};
       state.joints = data.joints || [];
-      /* Restore any already-mapped joints (re-scan preserves done) */
       state.joints.forEach(function(j) {
         if (j.mapped && j.mapped_geom) {
           state.done[j.token] = j.mapped_geom;
@@ -472,7 +491,6 @@ window.fusionJavaScriptHandler = {
     } else if (action === 'execute_result') {
       setStatus(data.report || 'Done.');
       document.getElementById('execute-btn').disabled = true;
-      /* Reset state so palette can be reused */
       state.done = {};
       state.joints = [];
       state.orig = state.repl = '';
@@ -481,26 +499,20 @@ window.fusionJavaScriptHandler = {
   }
 };
 
-/* ── Filter buttons ── */
-document.querySelectorAll('.filter-btn').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    state.filter = this.dataset.filter;
-    document.querySelectorAll('.filter-btn').forEach(function(b) {
-      b.classList.toggle('active', b.dataset.filter === state.filter);
-    });
-    renderTable();
-  });
-});
-
-/* ── Execute ── */
-document.getElementById('execute-btn').addEventListener('click', function() {
-  this.disabled = true;
-  setStatus('Executing…');
-  sendAction('execute', '{}');
-});
-
-/* ── Ready ── */
-sendAction('ready', '{}');
+// Signal Python that the page is ready. Retry a few times in case the
+// Fusion bridge is not injected on the very first tick.
+var _readySent = false;
+function _sendReady() {
+  if (_readySent) return;
+  try {
+    adsk.fusionSendData('ready', '{}');
+    _readySent = true;
+  } catch(e) { /* adsk not yet available, will retry */ }
+}
+_sendReady();
+setTimeout(_sendReady, 150);
+setTimeout(_sendReady, 500);
+setTimeout(_sendReady, 1200);
 
 })();
 </script>
