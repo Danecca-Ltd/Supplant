@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0"
+    ProductType="Application"
+    AutodeskProduct="Fusion360"
+    Name="Supplant"
+    Description="Replace a component while redirecting all joints and constraints to the replacement"
+    AppVersion="0.2.0"
+    Author="Danecca Ltd"
+    AppNameSpace="com.danecca.supplant"
+    OnlineDocumentation=""
+    ProductCode="*"
+    UpgradeCode="{A7C4D2E1-9F3B-4E8A-BC15-2D7F1A5E8C3D}" >
+
+    <CompanyDetails Name="Danecca Ltd"
+        Phone=" "
+        Url=""
+        Email="" />
+
+    <RuntimeRequirements SupportPath="./Contents" OS="win64|mac" Platform="Fusion360" SeriesMin="" />
+
+    <Components>
+        <RuntimeRequirements SupportPath="./Contents" OS="win64|mac" Platform="Fusion360" SeriesMin="" />
+        <ComponentEntry AppName="Supplant" Version="0.2.0"
+            ModuleName="./Contents/Supplant.manifest"
+            AppDescription="Replace a component while redirecting all joints and constraints to the replacement" />
+    </Components>
+
+</ApplicationPackage>

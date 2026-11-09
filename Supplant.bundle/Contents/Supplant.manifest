@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "com.danecca.supplant",
+    "author": "Danecca Ltd",
+    "description": {
+        "": "Replace a component while redirecting all joints and constraints to the replacement"
+    },
+    "version": "0.2.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Supplant</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Consolas, sans-serif;
+  font-size: 12px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+/* ── Header ── */
+#header {
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  height: 36px;
+}
+#header h1 { font-size: 11px; font-weight: 700; color: #ce9178; letter-spacing: 0.15em; white-space: nowrap; }
+.hdr-sep  { color: #3c3c3c; font-size: 14px; }
+.hdr-chip { font-size: 11px; color: #858585; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hdr-chip strong { color: #9cdcfe; font-weight: 500; }
+.hdr-spacer { flex: 1; }
+
+/* ── Summary bar ── */
+#summary-bar {
+  background: #2d2d2d;
+  border-bottom: 1px solid #3c3c3c;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 28px;
+}
+.pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 500;
+  border: 1px solid transparent;
+}
+.pill-mapped  { color: #4ec9b0; border-color: rgba(78,201,176,0.35); background: rgba(78,201,176,0.08); }
+.pill-pending { color: #dcdcaa; border-color: rgba(220,220,170,0.35); background: rgba(220,220,170,0.08); }
+.pill-auto    { color: #858585; border-color: rgba(133,133,133,0.35); background: rgba(133,133,133,0.08); }
+.pill-sep { color: #3c3c3c; margin: 0 2px; }
+
+/* ── Pick banner ── */
+#pick-banner {
+  display: none;
+  background: #1a3a1a;
+  border-bottom: 1px solid #3a6a3a;
+  color: #4ec9b0;
+  font-size: 11px;
+  padding: 5px 14px;
+  flex-shrink: 0;
+}
+#pick-banner.visible { display: block; }
+
+/* ── Toolbar ── */
+#toolbar {
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 32px;
+}
+.filter-btn {
+  background: transparent; border: 1px solid transparent;
+  color: #858585; border-radius: 3px; padding: 2px 9px;
+  cursor: pointer; font-size: 11px; font-family: inherit; transition: all 0.1s;
+}
+.filter-btn:hover { color: #d4d4d4; border-color: #3c3c3c; }
+.filter-btn.active { color: #d4d4d4; background: #37373d; border-color: #3c3c3c; }
+.tb-spacer { flex: 1; }
+
+/* ── Table wrap ── */
+#table-wrap { flex: 1; overflow-y: auto; overflow-x: hidden; background: #1e1e1e; }
+
+/* ── Table ── */
+#ref-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+#ref-table col.c-status { width: 26px; }
+#ref-table col.c-name   { width: 24%; }
+#ref-table col.c-type   { width: 10%; }
+#ref-table col.c-other  { width: auto; }
+#ref-table col.c-action { width: 190px; }
+
+#ref-table thead th {
+  background: #2d2d2d;
+  border-bottom: 2px solid #007acc;
+  padding: 3px 6px; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.05em; color: #858585; text-align: left;
+  white-space: nowrap; position: sticky; top: 0; z-index: 10;
+}
+
+#ref-table tbody tr { border-bottom: 1px solid #2a2a2a; cursor: pointer; transition: background 0.08s; }
+#ref-table tbody tr:hover { background: #2a2a2a; }
+#ref-table tbody tr.row-active { background: #1f3a5a; }
+#ref-table tbody tr.row-active:hover { background: #254a72; }
+#ref-table tbody tr.row-picking { background: #2d2a0a; }
+#ref-table tbody tr.hidden { display: none; }
+
+#ref-table td { padding: 4px 6px; vertical-align: middle; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.td-status  { text-align: center; width: 26px; font-size: 13px; }
+.td-name    { color: #d4d4d4; }
+.td-type    { color: #858585; font-size: 10px; }
+.td-other   { color: #9d9d9d; }
+.td-action  { width: 190px; white-space: nowrap; overflow: visible; }
+
+/* Status icons */
+.icon-mapped  { color: #4ec9b0; }
+.icon-pending { color: #858585; }
+.icon-picking { color: #dcdcaa; }
+
+/* Row status flavours */
+tr.s-mapped .td-name  { color: #4ec9b0; }
+tr.s-pending .td-name { color: #d4d4d4; }
+
+/* Action buttons */
+.act-btn {
+  font-size: 10px; font-family: inherit; padding: 1px 7px;
+  border-radius: 3px; cursor: pointer; border: 1px solid transparent;
+  background: #007acc; color: #fff; transition: background 0.1s; white-space: nowrap;
+}
+.act-btn:hover { background: #0062a3; }
+.act-btn.secondary { background: #3c3c3c; color: #9cdcfe; border-color: #555; }
+.act-btn.secondary:hover { background: #505050; }
+.act-btn:disabled { background: #333; color: #555; cursor: default; }
+
+.mapped-tag {
+  display: inline-block; font-size: 10px; color: #4ec9b0;
+  margin-right: 4px; vertical-align: middle;
+}
+
+/* Section divider */
+tr.section-divider td {
+  background: #252526; color: #555; text-align: center; font-size: 10px;
+  font-style: italic; padding: 4px 6px;
+  border-top: 1px solid #3c3c3c; border-bottom: 1px solid #3c3c3c;
+}
+
+/* ── Footer ── */
+#footer {
+  background: #252526; border-top: 1px solid #3c3c3c;
+  padding: 0 14px; display: flex; align-items: center;
+  gap: 10px; flex-shrink: 0; height: 36px;
+}
+#status-msg { font-size: 11px; color: #858585; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#execute-btn {
+  background: #007acc; border: 1px solid #007acc; color: #fff;
+  border-radius: 3px; padding: 3px 16px; cursor: pointer;
+  font-size: 11px; font-family: inherit; font-weight: 500; transition: background 0.1s;
+  white-space: nowrap;
+}
+#execute-btn:hover { background: #0062a3; border-color: #0062a3; }
+#execute-btn:disabled { background: #3c3c3c; border-color: #3c3c3c; color: #555; cursor: default; }
+
+/* ── Loading / empty ── */
+#loading-row td, #empty-row td {
+  text-align: center; color: #555; padding: 40px 0; font-size: 12px;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1e1e1e; }
+::-webkit-scrollbar-thumb { background: #424242; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>&#9889; SUPPLANT</h1>
+  <span class="hdr-sep">|</span>
+  <div class="hdr-chip">From: <strong id="hdr-orig">&#8212;</strong></div>
+  <span class="hdr-sep">|</span>
+  <div class="hdr-chip">To: <strong id="hdr-repl">&#8212;</strong></div>
+  <span class="hdr-spacer"></span>
+</div>
+
+<div id="summary-bar">
+  <span class="pill pill-mapped">&#10003; <span id="cnt-mapped">0</span> mapped</span>
+  <span class="pill-sep">|</span>
+  <span class="pill pill-pending">&#9675; <span id="cnt-pending">0</span> pending</span>
+  <span class="pill-sep">|</span>
+  <span class="pill pill-auto">&#8667; <span id="cnt-auto">0</span> auto</span>
+</div>
+
+<div id="pick-banner">
+  &#9654; Pick mode active &#8212; click a face or edge on the replacement component, then click OK in the command dialog.
+</div>
+
+<div id="toolbar">
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="pending">Pending only</button>
+  <span class="tb-spacer"></span>
+</div>
+
+<div id="table-wrap">
+  <table id="ref-table">
+    <colgroup>
+      <col class="c-status">
+      <col class="c-name">
+      <col class="c-type">
+      <col class="c-other">
+      <col class="c-action">
+    </colgroup>
+    <thead>
+      <tr>
+        <th></th>
+        <th>Joint</th>
+        <th>Geometry</th>
+        <th>Connects to</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="table-body">
+      <tr id="loading-row"><td colspan="5">Waiting for data&#8230;</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div id="footer">
+  <span id="status-msg">Select original and replacement, then click OK in the Supplant dialog.</span>
+  <button id="execute-btn" disabled>Execute Supplant</button>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function sendAction(action, data) {
+  try { adsk.fusionSendData(action, data != null ? String(data) : ''); }
+  catch(e) { console.error('adsk send error', e); }
+}
+
+function setStatus(msg) { document.getElementById('status-msg').textContent = msg || ''; }
+
+/* ── State ── */
+var state = {
+  joints:        [],   // [{token,name,type,other,mapped,mapped_geom}]
+  done:          {},   // token → geom_desc string
+  orig:          '',
+  repl:          '',
+  auto:          0,
+  pickingToken:  null,
+  activeToken:   null,
+  filter:        'all'
+};
+
+/* ── Render ── */
+function renderAll() {
+  renderSummary();
+  renderTable();
+  updateExecuteBtn();
+}
+
+function renderSummary() {
+  document.getElementById('hdr-orig').textContent = state.orig || '—';
+  document.getElementById('hdr-repl').textContent = state.repl || '—';
+  var mapped  = Object.keys(state.done).length;
+  var total   = state.joints.length;
+  var pending = total - mapped;
+  document.getElementById('cnt-mapped').textContent  = mapped;
+  document.getElementById('cnt-pending').textContent = pending;
+  document.getElementById('cnt-auto').textContent    = state.auto;
+}
+
+function renderTable() {
+  var tbody = document.getElementById('table-body');
+  tbody.innerHTML = '';
+
+  if (!state.joints.length) {
+    var tr = document.createElement('tr');
+    tr.id = 'empty-row';
+    var td = document.createElement('td');
+    td.colSpan = 5;
+    td.textContent = 'No joint references found. Click Execute to swap and rename.';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  var frag = document.createDocumentFragment();
+
+  state.joints.forEach(function(j) {
+    var isMapped   = !!state.done[j.token];
+    var isPicking  = state.pickingToken === j.token;
+    var isActive   = state.activeToken  === j.token;
+    var showRow    = state.filter === 'all' || !isMapped;
+
+    var tr = document.createElement('tr');
+    tr.dataset.token = j.token;
+    if (!showRow) tr.classList.add('hidden');
+    if (isMapped)  tr.classList.add('s-mapped');
+    else           tr.classList.add('s-pending');
+    if (isActive)  tr.classList.add('row-active');
+    if (isPicking) tr.classList.add('row-picking');
+
+    /* Status icon */
+    var statusTd = document.createElement('td');
+    statusTd.className = 'td-status';
+    if (isPicking) {
+      statusTd.innerHTML = '<span class="icon-picking" title="Picking…">&#8987;</span>';
+    } else if (isMapped) {
+      statusTd.innerHTML = '<span class="icon-mapped" title="Mapped">&#10003;</span>';
+    } else {
+      statusTd.innerHTML = '<span class="icon-pending" title="Pending">&#9675;</span>';
+    }
+    tr.appendChild(statusTd);
+
+    /* Joint name */
+    var nameTd = document.createElement('td');
+    nameTd.className = 'td-name';
+    nameTd.textContent = j.name;
+    nameTd.title = j.name;
+    tr.appendChild(nameTd);
+
+    /* Geometry type */
+    var typeTd = document.createElement('td');
+    typeTd.className = 'td-type';
+    typeTd.textContent = j.type || '';
+    tr.appendChild(typeTd);
+
+    /* Connects to */
+    var otherTd = document.createElement('td');
+    otherTd.className = 'td-other';
+    otherTd.textContent = j.other || '';
+    otherTd.title = j.other || '';
+    tr.appendChild(otherTd);
+
+    /* Action */
+    var actTd = document.createElement('td');
+    actTd.className = 'td-action';
+
+    if (isPicking) {
+      actTd.innerHTML = '<span style="color:#dcdcaa;font-size:10px">Picking…</span>';
+    } else if (isMapped) {
+      var geomDesc = state.done[j.token] || '';
+      var tag = document.createElement('span');
+      tag.className = 'mapped-tag';
+      tag.textContent = '→ ' + geomDesc;
+      actTd.appendChild(tag);
+      var repickBtn = document.createElement('button');
+      repickBtn.className = 'act-btn secondary';
+      repickBtn.textContent = 'Re-pick';
+      repickBtn.dataset.token = j.token;
+      repickBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        startPick(this.dataset.token);
+      });
+      actTd.appendChild(repickBtn);
+    } else {
+      var pickBtn = document.createElement('button');
+      pickBtn.className = 'act-btn';
+      pickBtn.textContent = 'Pick →';
+      pickBtn.dataset.token = j.token;
+      pickBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        startPick(this.dataset.token);
+      });
+      actTd.appendChild(pickBtn);
+    }
+
+    tr.appendChild(actTd);
+
+    /* Row click = highlight original geometry */
+    tr.addEventListener('click', function() {
+      var tok = this.dataset.token;
+      state.activeToken = (state.activeToken === tok) ? null : tok;
+      renderTable();
+      if (state.activeToken) {
+        sendAction('set_active_joint', JSON.stringify({ token: tok }));
+      }
+    });
+
+    frag.appendChild(tr);
+  });
+
+  tbody.appendChild(frag);
+}
+
+function updateExecuteBtn() {
+  var mapped  = Object.keys(state.done).length;
+  var total   = state.joints.length;
+  var allDone = mapped >= total;
+  document.getElementById('execute-btn').disabled = !allDone;
+}
+
+function startPick(token) {
+  if (state.pickingToken) return; /* already picking */
+  state.pickingToken = token;
+  document.getElementById('pick-banner').classList.add('visible');
+  renderTable();
+  setStatus('Pick mode — click a face or edge on ‘' + state.repl + '’, then click OK.');
+  sendAction('start_pick', JSON.stringify({ token: token }));
+}
+
+/* ── Message bridge from Python ── */
+window.fusionJavaScriptHandler = {
+  handle: function(action, dataStr) {
+    var data = {};
+    try { data = JSON.parse(dataStr || '{}'); } catch(e) {}
+
+    if (action === 'data') {
+      state.orig   = data.orig  || '';
+      state.repl   = data.repl  || '';
+      state.auto   = data.auto  || 0;
+      state.done   = {};
+      state.joints = data.joints || [];
+      /* Restore any already-mapped joints (re-scan preserves done) */
+      state.joints.forEach(function(j) {
+        if (j.mapped && j.mapped_geom) {
+          state.done[j.token] = j.mapped_geom;
+        }
+      });
+      state.pickingToken = null;
+      state.activeToken  = null;
+      document.getElementById('pick-banner').classList.remove('visible');
+      setStatus(state.joints.length + ' joint reference(s) found. Click a row to highlight on original, then Pick → to map.');
+      renderAll();
+
+    } else if (action === 'pick_result') {
+      state.done[data.token] = data.geom || 'face';
+      if (state.pickingToken === data.token) {
+        state.pickingToken = null;
+        document.getElementById('pick-banner').classList.remove('visible');
+      }
+      renderAll();
+      var mapped = Object.keys(state.done).length;
+      var total  = state.joints.length;
+      if (mapped >= total) {
+        setStatus('All ' + total + ' joint(s) mapped. Click Execute Supplant.');
+      } else {
+        setStatus((total - mapped) + ' joint(s) remaining.');
+      }
+
+    } else if (action === 'pick_error') {
+      state.pickingToken = null;
+      document.getElementById('pick-banner').classList.remove('visible');
+      renderTable();
+      setStatus('⚠ ' + (data.message || 'Pick error.'));
+
+    } else if (action === 'pick_cancel') {
+      state.pickingToken = null;
+      document.getElementById('pick-banner').classList.remove('visible');
+      renderTable();
+      setStatus('Pick cancelled.');
+
+    } else if (action === 'highlight_error') {
+      setStatus('⚠ Could not find original geometry for this joint.');
+
+    } else if (action === 'execute_result') {
+      setStatus(data.report || 'Done.');
+      document.getElementById('execute-btn').disabled = true;
+      /* Reset state so palette can be reused */
+      state.done = {};
+      state.joints = [];
+      state.orig = state.repl = '';
+      renderSummary();
+    }
+  }
+};
+
+/* ── Filter buttons ── */
+document.querySelectorAll('.filter-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    state.filter = this.dataset.filter;
+    document.querySelectorAll('.filter-btn').forEach(function(b) {
+      b.classList.toggle('active', b.dataset.filter === state.filter);
+    });
+    renderTable();
+  });
+});
+
+/* ── Execute ── */
+document.getElementById('execute-btn').addEventListener('click', function() {
+  this.disabled = true;
+  setStatus('Executing…');
+  sendAction('execute', '{}');
+});
+
+/* ── Ready ── */
+sendAction('ready', '{}');
+
+})();
+</script>
+</body>
+</html>
