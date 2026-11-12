@@ -1398,6 +1398,23 @@ def _build_preview() -> None:
         if target_occ is None or not all_items or not done:
             return
 
+        # Build set of all required pick tokens per constraint group (inc. :b partner picks).
+        # Used to gate midplane preview: only shown when every pick in the group is done.
+        all_toks_per_group: dict = {}
+        for item in all_items:
+            entity = item[0]
+            if not isinstance(entity, adsk.fusion.AssemblyConstraint):
+                continue
+            rel_cache = item[6] if len(item) > 6 else None
+            if rel_cache is None:
+                continue
+            if rel_cache.get("skip_reason") == "tangent (Face–Edge)":
+                continue
+            ac_name = entity.name
+            if ac_name not in all_toks_per_group:
+                all_toks_per_group[ac_name] = []
+            all_toks_per_group[ac_name].append(_item_token(item))
+
         # Group picked items by constraint name (regular AND midplane).
         groups: dict = {}
         for item in all_items:
@@ -1429,6 +1446,13 @@ def _build_preview() -> None:
 
         for ac_name, entries in groups.items():
             try:
+                # Gate midplane preview: only show when every pick in the group is done.
+                group_fully_mapped = all(
+                    t in done for t in all_toks_per_group.get(ac_name, []))
+                has_mp = any(is_mp for _, _, _, is_mp in entries)
+                if has_mp and not group_fully_mapped:
+                    entries = [(item, de, rc, False) for item, de, rc, is_mp in entries if not is_mp]
+
                 ci          = comp.assemblyConstraints.createInput()
                 rcol        = ci.geometricRelationships
                 created_any = False
