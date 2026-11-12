@@ -2204,20 +2204,10 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                 except Exception as _exc:
                     skipped.append(f"Constraint '{cname}' rel {_idx}: {_exc}")
 
-            if shared_count > 0:
-                _ac_sh = comp_root.assemblyConstraints.add(ci_shared)
-                if _ac_sh is None:
-                    skipped.append(f"Constraint '{cname}': add() returned None for main rels")
-                else:
-                    try: _ac_sh.name = cname
-                    except Exception: pass
-                    any_redirected = True
-                    phase_b2_redirected.append((_ac_sh, cname, shared_occs, []))
-
-            # Midplane rows: tangent Face-Edge → log skip; others → CP workaround.
-            # API cannot create 2F-2F / Plane-2 Faces midplane via rcol.add.
-            # Workaround: create a root-level CP at W/2 from slot wall, then
-            # constrain the target face to that CP with isMate=True, offset=T/2.
+            # Midplane rows: add to the SAME ci_shared (one feature total).
+            # API cannot create 2F-2F / Plane-2 Faces midplane via rcol.add directly.
+            # Workaround: create a root-level CP at W/2 from slot wall, then add
+            # rcol_shared.add(equiv, cp, isMate=True, T_half) to the shared input.
             for mrow in midplane_rows:
                 if mrow.get('skip_reason') == "tangent (Face–Edge)":
                     skipped.append(
@@ -2232,20 +2222,6 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                     _mp_other_occ = mrow['other_occ']
                     _mp_other_ctr = mrow['other_ctr']
                     _mp_other_key = mrow['other_key']
-                    _mp_is_fl     = mrow['is_flipped']
-                    _mp_wn        = mrow.get('orig_world_normal')
-                    _mp_de        = picks.get(f"{mrow['k']}::{_mp_es}", ())
-                    _mp_pn        = _mp_de[5] if len(_mp_de) > 5 else None
-                    _mp_fo        = bool(_mp_de[6]) if len(_mp_de) > 6 and _mp_de[6] else False
-                    # Auto-flip and manual flip.
-                    if _mp_pn is not None and _mp_wn is not None:
-                        try:
-                            if _mp_pn.dotProduct(_mp_wn) < 0:
-                                _mp_is_fl = not _mp_is_fl
-                        except Exception:
-                            pass
-                    if _mp_fo:
-                        _mp_is_fl = not _mp_is_fl
 
                     # Find equiv on target_occ (tab face or orig CP).
                     _mp_lp = _pt_via_local(_mp_src_pt, _mp_pick_tf, target_occ.transform)
@@ -2286,8 +2262,9 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                             f"Constraint '{cname}' midplane rel {mrow['k']}: no equiv on other")
                         continue
 
-                    # Compute W_half: half slot-width from slot wall to its partner.
-                    # other_equiv is an assembly-ctx proxy → geometry is world-space.
+                    # Compute W_half: signed half slot-width along wall normal.
+                    # Proxy geometry is world-space; sign is self-correcting because
+                    # setByOffset uses the same normal direction as the dot product.
                     _mp_wall_normal = None
                     _mp_W_half = 0.0
                     try:
@@ -2323,7 +2300,7 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                         continue
 
                     # Compute T_half for 2F-2F case (half-thickness of constrained component).
-                    # For Plane-2 Faces (orig CP), T_half stays 0: CP → flush with midplane CP.
+                    # For Plane-2 Faces (orig CP), T_half stays 0: CP flush to midplane CP.
                     _mp_T_half = 0.0
                     if _mp_geom_key == "planar" and _mp_wall_normal is not None:
                         try:
@@ -2348,39 +2325,45 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                         except Exception:
                             _mp_T_half = 0.0
 
-                    # Create constraint: equiv (tab face or orig CP) → midplane CP.
+                    # isFlipped: geometry-based for the new mate (isMate=True).
+                    # For mate, Fusion expects normals antiparallel (dot < 0) → isFlipped=False.
+                    # If equiv normal and cp/wall normal are parallel (dot ≥ 0) → isFlipped=True.
+                    _mp_computed_fl = False
                     try:
-                        ci_mp = comp_root.assemblyConstraints.createInput()
-                        rcol_mp = ci_mp.geometricRelationships
-                        _mp_gr = rcol_mp.add(
+                        _mp_en = _mp_equiv.geometry.normal   # world (proxy)
+                        if _mp_en.dotProduct(_mp_wall_normal) >= 0:
+                            _mp_computed_fl = True
+                    except Exception:
+                        pass
+
+                    # Add to the shared relationship collection (not a new feature).
+                    try:
+                        _mp_gr = rcol_shared.add(
                             _mp_equiv, _mp_cp, True,
                             adsk.core.ValueInput.createByReal(_mp_T_half))
                         if _mp_gr is not None:
-                            try:
-                                _mp_gr.isFlipped = _mp_is_fl
-                            except Exception:
-                                pass
-                        ac_mp = comp_root.assemblyConstraints.add(ci_mp)
-                        if ac_mp is None:
-                            skipped.append(
-                                f"Constraint '{cname}' midplane rel {mrow['k']}: "
-                                f"add returned None")
-                            continue
-                        try:
-                            ac_mp.name = cname + "_mid"
-                        except Exception:
-                            pass
-                        any_redirected = True
-                        phase_b2_redirected.append((ac_mp, cname + "_mid",
-                                                    [_mp_other_occ] if _mp_other_occ else [],
-                                                    []))
+                            try: _mp_gr.isFlipped = _mp_computed_fl
+                            except Exception: pass
+                            shared_count += 1
+                            if _mp_other_occ is not None:
+                                shared_occs.append(_mp_other_occ)
                     except Exception as _ace:
                         skipped.append(
                             f"Constraint '{cname}' midplane rel {mrow['k']}: "
-                            f"constraint failed: {_ace}")
+                            f"rcol_shared.add failed: {_ace}")
                 except Exception as _mpe:
                     skipped.append(
                         f"Constraint '{cname}' midplane rel {mrow['k']}: {_mpe}")
+
+            if shared_count > 0:
+                _ac_sh = comp_root.assemblyConstraints.add(ci_shared)
+                if _ac_sh is None:
+                    skipped.append(f"Constraint '{cname}': add() returned None for main rels")
+                else:
+                    try: _ac_sh.name = cname
+                    except Exception: pass
+                    any_redirected = True
+                    phase_b2_redirected.append((_ac_sh, cname, shared_occs, []))
 
             if not any_redirected:
                 skipped.append(f"Constraint '{cname}': could not build any relationships")

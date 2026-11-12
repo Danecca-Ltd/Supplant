@@ -6,7 +6,7 @@
     "description": {
         "": "Replace a component while redirecting all joints and constraints to the replacement"
     },
-    "version": "0.4.26",
+    "version": "0.4.27",
     "runOnStartup": true,
     "supportedOS": "windows|mac",
     "editEnabled": true
