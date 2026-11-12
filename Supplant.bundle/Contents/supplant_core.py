@@ -2235,9 +2235,7 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                             pass
                     if _mp_fo:
                         _mp_is_fl = not _mp_is_fl
-                    # Original constraint was isMate=False; new is isMate=True.
-                    # Swapping isMate inverts the isFlipped semantics.
-                    _mp_is_fl = not _mp_is_fl
+                    # No inversion: original isFlipped (after auto-flip) maps directly.
 
                     # Find equiv on target_occ (tab face or orig CP).
                     _mp_lp = _pt_via_local(_mp_src_pt, _mp_pick_tf, target_occ.transform)
@@ -2278,26 +2276,34 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                             f"Constraint '{cname}' midplane rel {mrow['k']}: no equiv on other")
                         continue
 
-                    # Compute W_half using geometry.origin dot product (direct perp distance).
-                    # Uses same coordinate space for both faces (native→local or proxy→world).
+                    # Compute W_half using proxy face geometry (world-space) throughout.
+                    # nativeObject returns local-space geometry; local normals may be
+                    # antiparallel to world normals, flipping the sign of W_half and
+                    # placing the CP on the wrong side of the slot wall.
                     _mp_wall_normal = None
                     _mp_W_half = 0.0
+                    _mp_diag = [f"rel={mrow['k']} geom={_mp_geom_key} isfl_orig={mrow['is_flipped']} isfl_final={_mp_is_fl}"]
                     try:
                         _mp_wall_normal = _mp_other_equiv.geometry.normal
+                        _mp_diag.append(f"wall_norm=({_mp_wall_normal.x:.3f},{_mp_wall_normal.y:.3f},{_mp_wall_normal.z:.3f})")
                         if isinstance(_mp_other_equiv, adsk.fusion.BRepFace):
-                            _mp_wnat = getattr(_mp_other_equiv, 'nativeObject', None) \
-                                       or _mp_other_equiv
-                            _mp_pwall = _find_partner_plane_face(_mp_wnat, _mp_wnat.body)
+                            # Proxy face: world-space origins and normals, same frame
+                            # as setByOffset — no coordinate transform needed.
+                            _mp_pwall = _find_partner_plane_face(_mp_other_equiv, _mp_other_equiv.body)
                             if _mp_pwall is not None:
-                                _wo = _mp_wnat.geometry.origin
-                                _po = _mp_pwall.geometry.origin
-                                _wn = _mp_wnat.geometry.normal
+                                _wo = _mp_other_equiv.geometry.origin  # world
+                                _po = _mp_pwall.geometry.origin        # world
+                                _wn = _mp_other_equiv.geometry.normal  # world
                                 _dW = (_po.x - _wo.x) * _wn.x + \
                                       (_po.y - _wo.y) * _wn.y + \
                                       (_po.z - _wo.z) * _wn.z
                                 _mp_W_half = _dW / 2.0
-                    except Exception:
+                                _mp_diag.append(f"dW={_dW:.4f} W_half={_mp_W_half:.4f}")
+                            else:
+                                _mp_diag.append("pwall=None")
+                    except Exception as _we:
                         _mp_W_half = 0.0
+                        _mp_diag.append(f"W_err={_we}")
 
                     # Create midplane construction plane at W/2 from slot wall.
                     try:
@@ -2305,35 +2311,56 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                         _ci_cp.setByOffset(_mp_other_equiv,
                                            adsk.core.ValueInput.createByReal(_mp_W_half))
                         _mp_cp = comp_root.constructionPlanes.add(_ci_cp)
+                        _mp_diag.append(f"CP_ok W_half={_mp_W_half:.4f}")
                     except Exception as _cpe:
                         skipped.append(
                             f"Constraint '{cname}' midplane rel {mrow['k']}: "
                             f"CP creation failed: {_cpe}")
                         continue
 
-                    # Compute T_half for 2F-2F case using geometry.origin dot product.
-                    # Uses abs() for thickness magnitude; sign applied separately below.
+                    # Compute T_half for 2F-2F case.
+                    # Use proxy face directly (world-space) so _find_partner_plane_face
+                    # gets valid entityToken comparisons and world-space origins/normals.
                     # For Plane-2 Faces (orig CP), T_half stays 0: CP flush to midplane CP.
                     _mp_T_half = 0.0
                     if _mp_geom_key == "planar" and _mp_wall_normal is not None:
                         try:
-                            _mp_tnat = getattr(_mp_equiv, 'nativeObject', None) or _mp_equiv
-                            _mp_ptab = _find_partner_plane_face(_mp_tnat, _mp_tnat.body)
+                            # Proxy face — entityToken works, geometry is world-space.
+                            _mp_ptab = _find_partner_plane_face(_mp_equiv, _mp_equiv.body)
                             if _mp_ptab is not None:
-                                _to = _mp_tnat.geometry.origin
-                                _pto = _mp_ptab.geometry.origin
-                                _tn = _mp_tnat.geometry.normal
+                                _to  = _mp_equiv.geometry.origin   # world
+                                _pto = _mp_ptab.geometry.origin    # world
+                                _tn  = _mp_equiv.geometry.normal   # world
                                 _dT = (_pto.x - _to.x) * _tn.x + \
                                       (_pto.y - _to.y) * _tn.y + \
                                       (_pto.z - _to.z) * _tn.z
                                 _mp_T_half = abs(_dT) / 2.0
-                                # Sign correction (v0.4.14): face on positive-CP-normal side
-                                # needs negative offset in Fusion's Face-CP mate convention.
                                 _mp_en = _mp_equiv.geometry.normal
-                                if _mp_en.dotProduct(_mp_wall_normal) >= 0:
+                                _dot_sign = _mp_en.dotProduct(_mp_wall_normal)
+                                if _dot_sign >= 0:
                                     _mp_T_half = -_mp_T_half
-                        except Exception:
+                                _mp_diag.append(f"dT={_dT:.4f} T_half={_mp_T_half:.4f} dot={_dot_sign:.3f}")
+                            else:
+                                # Diagnostic: face count and best dot to understand why
+                                try:
+                                    _fc = _mp_equiv.body.faces.count
+                                    _dots = []
+                                    _ref_n = _mp_equiv.geometry.normal
+                                    for _fi in range(min(_fc, 20)):
+                                        _ff = _mp_equiv.body.faces.item(_fi)
+                                        try:
+                                            _fn = _ff.geometry.normal
+                                            _d = _ref_n.x*_fn.x + _ref_n.y*_fn.y + _ref_n.z*_fn.z
+                                            _dots.append(f"{_d:.2f}")
+                                        except Exception:
+                                            _dots.append("?")
+                                    _mp_diag.append(f"ptab=None fc={_fc} dots=[{','.join(_dots)}] → T_half=0")
+                                except Exception:
+                                    _mp_diag.append("ptab=None → T_half=0")
+                        except Exception as _te:
                             _mp_T_half = 0.0
+                            _mp_diag.append(f"T_err={_te}")
+                    print("SUPPLANT_MP " + " | ".join(_mp_diag))
 
                     # Add to the shared relationship collection (not a new feature).
                     try:
