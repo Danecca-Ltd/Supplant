@@ -1979,17 +1979,44 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                         pass
                     if is_midplane:
                         if _skip_reason == "tangent (Face–Edge)":
-                            # Truly cannot be created via the GeometricRelationship API.
                             had_midplane_skip = True
                             midplane_rows.append({
                                 'k': k, 'skip_reason': _skip_reason,
                             })
                             continue
-                        # Plane-2 Faces and 2F-2F midplane: fall through to rel_rows.
-                        # rcol.add() with isMate=False + offset=0 creates the correct
-                        # constraint type when the original isFlipped is preserved.
-                        # This was the v0.4.16 behaviour; the setByTwoPlanes workaround
-                        # was a detour that introduced separate features and lost isFlipped.
+                        # Plane-2 Faces and 2F-2F midplane: cannot be created via
+                        # rcol.add(e1, e2, False, 0) — that creates Angle instead.
+                        # Use setByTwoPlanes in a separate feature with original isFlipped.
+                        _mp_world_normal = None
+                        try:
+                            _orig_raw = rel.entityOne if entity_side == "one" else rel.entityTwo
+                            if isinstance(_orig_raw, adsk.fusion.BRepFace):
+                                _orig_ctx = _orig_raw.assemblyContext
+                                if _orig_ctx is not None:
+                                    _mp_world_normal = _face_world_normal(_orig_raw, _orig_ctx)
+                            elif isinstance(_orig_raw, adsk.fusion.ConstructionPlane):
+                                _orig_ctx = _orig_raw.assemblyContext
+                                _n_loc    = _orig_raw.geometry.normal
+                                _tf       = _orig_ctx.transform if _orig_ctx is not None else None
+                                _mp_world_normal = (
+                                    _rotate_by_transform(_n_loc, _tf) if _tf is not None
+                                    else adsk.core.Vector3D.create(_n_loc.x, _n_loc.y, _n_loc.z))
+                        except Exception:
+                            pass
+                        midplane_rows.append({
+                            'k': k,
+                            'skip_reason': _skip_reason,
+                            'entity_side': entity_side,
+                            'source_pt': source_pt,
+                            'geom_key': geom_key,
+                            'pick_transform': pick_transform,
+                            'other_occ': other_occ,
+                            'other_ctr': other_ctr,
+                            'other_key': other_key,
+                            'is_flipped': is_flipped,
+                            'orig_world_normal': _mp_world_normal,
+                        })
+                        continue
                     # Capture world-space normal of the orig_occ side entity so execution
                     # can auto-correct isFlipped when the equivalent has opposite orientation.
                     orig_world_normal = None
@@ -2187,11 +2214,87 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                     any_redirected = True
                     phase_b2_redirected.append((_ac_sh, cname, shared_occs, []))
 
-            # Tangent Face-Edge rows: log as skipped (cannot be created via API).
+            # Midplane rows: tangent Face-Edge → log skip; others → setByTwoPlanes.
             for mrow in midplane_rows:
-                skipped.append(
-                    f"Constraint '{cname}' tangent rel {mrow['k']}: "
-                    f"Face-Edge tangent cannot be created via API; rebuild manually")
+                if mrow.get('skip_reason') == "tangent (Face–Edge)":
+                    skipped.append(
+                        f"Constraint '{cname}' tangent rel {mrow['k']}: "
+                        f"Face-Edge tangent cannot be created via API; rebuild manually")
+                    continue
+                try:
+                    _mp_es        = mrow['entity_side']
+                    _mp_src_pt    = mrow['source_pt']
+                    _mp_geom_key  = mrow['geom_key']
+                    _mp_pick_tf   = mrow.get('pick_transform')
+                    _mp_other_occ = mrow['other_occ']
+                    _mp_other_ctr = mrow['other_ctr']
+                    _mp_other_key = mrow['other_key']
+                    _mp_is_fl     = mrow['is_flipped']
+                    _mp_wn        = mrow.get('orig_world_normal')
+                    _mp_de        = picks.get(f"{mrow['k']}::{_mp_es}", ())
+                    _mp_pn        = _mp_de[5] if len(_mp_de) > 5 else None
+                    _mp_fo        = bool(_mp_de[6]) if len(_mp_de) > 6 and _mp_de[6] else False
+                    # Auto-flip: if equiv face normal is reversed relative to original, flip.
+                    if _mp_pn is not None and _mp_wn is not None:
+                        try:
+                            if _mp_pn.dotProduct(_mp_wn) < 0:
+                                _mp_is_fl = not _mp_is_fl
+                        except Exception:
+                            pass
+                    if _mp_fo:
+                        _mp_is_fl = not _mp_is_fl
+                    _mp_lp = _pt_via_local(_mp_src_pt, _mp_pick_tf, target_occ.transform)
+                    if _mp_geom_key == "construction_plane":
+                        _mp_equiv = _nearest_construction_plane_to_point(_mp_lp, target_occ)
+                    else:
+                        _mp_equiv, _ = _nearest_face_to_point(_mp_lp, target_occ, "Plane")
+                        if _mp_equiv is None:
+                            _mp_equiv, _ = _nearest_face_to_point(_mp_lp, target_occ)
+                    if _mp_equiv is None:
+                        skipped.append(
+                            f"Constraint '{cname}' midplane rel {mrow['k']}: no equiv on target")
+                        continue
+                    _mp_other_equiv = None
+                    if _mp_other_occ is not None and _mp_other_ctr is not None:
+                        _mp_adj = adsk.core.Point3D.create(
+                            _mp_other_ctr.x, _mp_other_ctr.y, _mp_other_ctr.z)
+                        _mp_adj.transformBy(_mp_other_occ.transform)
+                        if _mp_other_key == "construction_plane":
+                            _mp_other_equiv = _nearest_construction_plane_to_point(
+                                _mp_adj, _mp_other_occ)
+                        else:
+                            _mp_other_equiv, _ = _nearest_face_to_point(
+                                _mp_adj, _mp_other_occ, "Plane")
+                            if _mp_other_equiv is None:
+                                _mp_other_equiv, _ = _nearest_face_to_point(
+                                    _mp_adj, _mp_other_occ)
+                    if _mp_other_equiv is None:
+                        skipped.append(
+                            f"Constraint '{cname}' midplane rel {mrow['k']}: no equiv on other")
+                        continue
+                    _mp_e1 = _mp_equiv       if _mp_es == "one" else _mp_other_equiv
+                    _mp_e2 = _mp_other_equiv if _mp_es == "one" else _mp_equiv
+                    ci_mp = comp_root.assemblyConstraints.createInput()
+                    ci_mp.setByTwoPlanes(_mp_e1, _mp_e2)
+                    ac_mp = comp_root.assemblyConstraints.add(ci_mp)
+                    if ac_mp is None:
+                        skipped.append(
+                            f"Constraint '{cname}' midplane rel {mrow['k']}: add returned None")
+                        continue
+                    try:
+                        ac_mp.geometricRelationships.item(0).isFlipped = _mp_is_fl
+                    except Exception:
+                        pass
+                    try:
+                        ac_mp.name = cname + "_mid"
+                    except Exception:
+                        pass
+                    any_redirected = True
+                    phase_b2_redirected.append((ac_mp, cname + "_mid",
+                                                [_mp_other_occ] if _mp_other_occ else [], []))
+                except Exception as _mpe:
+                    skipped.append(
+                        f"Constraint '{cname}' midplane rel {mrow['k']}: {_mpe}")
 
             if not any_redirected:
                 skipped.append(f"Constraint '{cname}': could not build any relationships")
