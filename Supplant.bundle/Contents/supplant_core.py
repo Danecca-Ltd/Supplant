@@ -1376,6 +1376,22 @@ def _delete_preview_constraints(comp=None) -> None:
             cp.deleteMe()
         except Exception:
             pass
+    joints_to_delete = []
+    try:
+        for i in range(comp.joints.count):
+            j = comp.joints.item(i)
+            try:
+                if j.name.startswith("SUPPLANT_PREVIEW_"):
+                    joints_to_delete.append(j)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    for j in joints_to_delete:
+        try:
+            j.deleteMe()
+        except Exception:
+            pass
 
 
 def _build_preview() -> None:
@@ -1399,17 +1415,15 @@ def _build_preview() -> None:
             return
 
         # Build set of all required pick tokens per constraint group (inc. :b partner picks).
-        # Used to gate midplane preview per relationship: a 2F-2F item only previews once
-        # its :b partner pick is also done; a Plane-2 Faces item (no :b) previews immediately.
+        # :b rows have rel_cache=None so we must NOT skip on rel_cache is None here.
+        # Only skip tangent Face-Edge items (non-pickable, have explicit skip_reason).
         all_toks_per_group: dict = {}
         for item in all_items:
             entity = item[0]
             if not isinstance(entity, adsk.fusion.AssemblyConstraint):
                 continue
             rel_cache = item[6] if len(item) > 6 else None
-            if rel_cache is None:
-                continue
-            if rel_cache.get("skip_reason") == "tangent (Face–Edge)":
+            if rel_cache is not None and rel_cache.get("skip_reason") == "tangent (Face–Edge)":
                 continue
             ac_name = entity.name
             if ac_name not in all_toks_per_group:
@@ -1711,6 +1725,55 @@ def _build_preview() -> None:
                             new_ac.name = f"SUPPLANT_PREVIEW_{ac_name}"
                         except Exception:
                             pass
+            except Exception:
+                pass
+
+        # Joint preview: one temporary joint per picked joint, using the same
+        # geometry-lookup and motion-copy logic as Phase A/B of _do_supplant.
+        seen_jnames: set = set()
+        for item in all_items:
+            entity = item[0]
+            if isinstance(entity, adsk.fusion.AssemblyConstraint):
+                continue
+            if not isinstance(entity, adsk.fusion.Joint):
+                continue
+            tok = _item_token(item)
+            if tok not in done:
+                continue
+            jname = entity.name
+            if jname in seen_jnames:
+                continue
+            seen_jnames.add(jname)
+            try:
+                done_entry     = done[tok]
+                source_pt      = done_entry[0]
+                geom_key       = done_entry[1]
+                stored_side    = done_entry[2]
+                pick_transform = done_entry[4] if len(done_entry) > 4 else None
+                lookup_pt      = _pt_via_local(source_pt, pick_transform, target_occ.transform)
+                if geom_key == "edge":
+                    equiv     = _nearest_edge_to_point(lookup_pt, target_occ)
+                    equiv_key = "edge"
+                else:
+                    equiv, equiv_key = _nearest_face_to_point(lookup_pt, target_occ)
+                if equiv is None:
+                    continue
+                new_geom = _build_joint_geometry(equiv, equiv_key)
+                if new_geom is None:
+                    continue
+                if stored_side == "one":
+                    other_geom = entity.geometryOrOriginTwo
+                    ji = comp.joints.createInput(new_geom, other_geom)
+                else:
+                    other_geom = entity.geometryOrOriginOne
+                    ji = comp.joints.createInput(other_geom, new_geom)
+                _copy_joint_motion(entity, ji)
+                new_j = comp.joints.add(ji)
+                if new_j is not None:
+                    try:
+                        new_j.name = f"SUPPLANT_PREVIEW_{jname}"
+                    except Exception:
+                        pass
             except Exception:
                 pass
     except Exception:
