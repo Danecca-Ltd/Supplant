@@ -2206,8 +2206,7 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
 
             # Midplane rows: add to the SAME ci_shared (one feature total).
             # API cannot create 2F-2F / Plane-2 Faces midplane via rcol.add directly.
-            # Workaround: create a root-level CP at W/2 from slot wall, then add
-            # rcol_shared.add(equiv, cp, isMate=True, T_half) to the shared input.
+            # Workaround: root-level CP at W/2 from slot wall + mate(equiv, cp, T_half).
             for mrow in midplane_rows:
                 if mrow.get('skip_reason') == "tangent (Face–Edge)":
                     skipped.append(
@@ -2222,6 +2221,23 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                     _mp_other_occ = mrow['other_occ']
                     _mp_other_ctr = mrow['other_ctr']
                     _mp_other_key = mrow['other_key']
+                    # Restore original isFlipped + auto-flip + manual flip.
+                    _mp_is_fl = mrow['is_flipped']
+                    _mp_wn    = mrow.get('orig_world_normal')
+                    _mp_de    = picks.get(f"{mrow['k']}::{_mp_es}", ())
+                    _mp_pn    = _mp_de[5] if len(_mp_de) > 5 else None
+                    _mp_fo    = bool(_mp_de[6]) if len(_mp_de) > 6 and _mp_de[6] else False
+                    if _mp_pn is not None and _mp_wn is not None:
+                        try:
+                            if _mp_pn.dotProduct(_mp_wn) < 0:
+                                _mp_is_fl = not _mp_is_fl
+                        except Exception:
+                            pass
+                    if _mp_fo:
+                        _mp_is_fl = not _mp_is_fl
+                    # Original constraint was isMate=False; new is isMate=True.
+                    # Swapping isMate inverts the isFlipped semantics.
+                    _mp_is_fl = not _mp_is_fl
 
                     # Find equiv on target_occ (tab face or orig CP).
                     _mp_lp = _pt_via_local(_mp_src_pt, _mp_pick_tf, target_occ.transform)
@@ -2262,28 +2278,24 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                             f"Constraint '{cname}' midplane rel {mrow['k']}: no equiv on other")
                         continue
 
-                    # Compute W_half: signed half slot-width along wall normal.
-                    # Proxy geometry is world-space; sign is self-correcting because
-                    # setByOffset uses the same normal direction as the dot product.
+                    # Compute W_half using geometry.origin dot product (direct perp distance).
+                    # Uses same coordinate space for both faces (native→local or proxy→world).
                     _mp_wall_normal = None
                     _mp_W_half = 0.0
                     try:
-                        _mp_wall_normal = _mp_other_equiv.geometry.normal   # world (proxy)
-                        _mp_wall_ctr    = _face_centroid(_mp_other_equiv)   # world (proxy)
+                        _mp_wall_normal = _mp_other_equiv.geometry.normal
                         if isinstance(_mp_other_equiv, adsk.fusion.BRepFace):
                             _mp_wnat = getattr(_mp_other_equiv, 'nativeObject', None) \
                                        or _mp_other_equiv
                             _mp_pwall = _find_partner_plane_face(_mp_wnat, _mp_wnat.body)
-                            if _mp_pwall is not None and _mp_wall_ctr is not None:
-                                _mp_pctr_loc = _face_centroid(_mp_pwall)  # component-local
-                                _mp_pctr_w = adsk.core.Point3D.create(
-                                    _mp_pctr_loc.x, _mp_pctr_loc.y, _mp_pctr_loc.z)
-                                _mp_pctr_w.transformBy(_mp_other_occ.transform)  # → world
-                                _mp_dW = adsk.core.Vector3D.create(
-                                    _mp_pctr_w.x - _mp_wall_ctr.x,
-                                    _mp_pctr_w.y - _mp_wall_ctr.y,
-                                    _mp_pctr_w.z - _mp_wall_ctr.z)
-                                _mp_W_half = _mp_dW.dotProduct(_mp_wall_normal) / 2.0
+                            if _mp_pwall is not None:
+                                _wo = _mp_wnat.geometry.origin
+                                _po = _mp_pwall.geometry.origin
+                                _wn = _mp_wnat.geometry.normal
+                                _dW = (_po.x - _wo.x) * _wn.x + \
+                                      (_po.y - _wo.y) * _wn.y + \
+                                      (_po.z - _wo.z) * _wn.z
+                                _mp_W_half = _dW / 2.0
                     except Exception:
                         _mp_W_half = 0.0
 
@@ -2299,7 +2311,8 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                             f"CP creation failed: {_cpe}")
                         continue
 
-                    # Compute T_half for 2F-2F case (half-thickness of constrained component).
+                    # Compute T_half for 2F-2F case using geometry.origin dot product.
+                    # Uses abs() for thickness magnitude; sign applied separately below.
                     # For Plane-2 Faces (orig CP), T_half stays 0: CP flush to midplane CP.
                     _mp_T_half = 0.0
                     if _mp_geom_key == "planar" and _mp_wall_normal is not None:
@@ -2307,34 +2320,20 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                             _mp_tnat = getattr(_mp_equiv, 'nativeObject', None) or _mp_equiv
                             _mp_ptab = _find_partner_plane_face(_mp_tnat, _mp_tnat.body)
                             if _mp_ptab is not None:
-                                _mp_tab_ctr = _face_centroid(_mp_equiv)       # world (proxy)
-                                _mp_ptloc   = _face_centroid(_mp_ptab)        # component-local
-                                _mp_ptw = adsk.core.Point3D.create(
-                                    _mp_ptloc.x, _mp_ptloc.y, _mp_ptloc.z)
-                                _mp_ptw.transformBy(target_occ.transform)     # → world
-                                _mp_dT = adsk.core.Vector3D.create(
-                                    _mp_ptw.x - _mp_tab_ctr.x,
-                                    _mp_ptw.y - _mp_tab_ctr.y,
-                                    _mp_ptw.z - _mp_tab_ctr.z)
-                                _mp_T_half = _mp_dT.dotProduct(_mp_wall_normal) / 2.0
-                                # Sign correction (v0.4.14): face on positive-normal side of
-                                # CP needs negative offset in Fusion's Face-CP mate convention.
-                                _mp_tn = _mp_equiv.geometry.normal   # world (proxy)
-                                if _mp_tn.dotProduct(_mp_wall_normal) >= 0:
+                                _to = _mp_tnat.geometry.origin
+                                _pto = _mp_ptab.geometry.origin
+                                _tn = _mp_tnat.geometry.normal
+                                _dT = (_pto.x - _to.x) * _tn.x + \
+                                      (_pto.y - _to.y) * _tn.y + \
+                                      (_pto.z - _to.z) * _tn.z
+                                _mp_T_half = abs(_dT) / 2.0
+                                # Sign correction (v0.4.14): face on positive-CP-normal side
+                                # needs negative offset in Fusion's Face-CP mate convention.
+                                _mp_en = _mp_equiv.geometry.normal
+                                if _mp_en.dotProduct(_mp_wall_normal) >= 0:
                                     _mp_T_half = -_mp_T_half
                         except Exception:
                             _mp_T_half = 0.0
-
-                    # isFlipped: geometry-based for the new mate (isMate=True).
-                    # For mate, Fusion expects normals antiparallel (dot < 0) → isFlipped=False.
-                    # If equiv normal and cp/wall normal are parallel (dot ≥ 0) → isFlipped=True.
-                    _mp_computed_fl = False
-                    try:
-                        _mp_en = _mp_equiv.geometry.normal   # world (proxy)
-                        if _mp_en.dotProduct(_mp_wall_normal) >= 0:
-                            _mp_computed_fl = True
-                    except Exception:
-                        pass
 
                     # Add to the shared relationship collection (not a new feature).
                     try:
@@ -2342,7 +2341,7 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                             _mp_equiv, _mp_cp, True,
                             adsk.core.ValueInput.createByReal(_mp_T_half))
                         if _mp_gr is not None:
-                            try: _mp_gr.isFlipped = _mp_computed_fl
+                            try: _mp_gr.isFlipped = _mp_is_fl
                             except Exception: pass
                             shared_count += 1
                             if _mp_other_occ is not None:
