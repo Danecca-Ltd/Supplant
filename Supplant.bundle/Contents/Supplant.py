@@ -9,12 +9,14 @@ import adsk.fusion
 import traceback
 import os
 import sys
+import importlib
 
 _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.insert(0, _here)
 
 import supplant_core  # noqa: E402
+importlib.reload(supplant_core)  # pick up edits without restarting Fusion
 
 handlers: list = []
 
