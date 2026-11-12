@@ -2325,8 +2325,57 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                     _mp_T_half = 0.0
                     if _mp_geom_key == "planar" and _mp_wall_normal is not None:
                         try:
-                            # Proxy face — entityToken works, geometry is world-space.
-                            _mp_ptab = _find_partner_plane_face(_mp_equiv, _mp_equiv.body)
+                            # Search ALL bodies of target_occ (not just _mp_equiv.body).
+                            # target_occ may have multiple BRep bodies; the partner face
+                            # could be in a different body from the selected face.
+                            _mp_ptab = None
+                            _pt_best = 1e18
+                            _pt_ref_n = _mp_equiv.geometry.normal
+                            _pt_ref_o = _mp_equiv.geometry.origin
+                            _pt_ref_area = max(_mp_equiv.area, 1e-12)
+                            try:
+                                _pt_ref_tok = _mp_equiv.entityToken
+                            except Exception:
+                                _pt_ref_tok = None
+                            _pt_nbodies = target_occ.bRepBodies.count
+                            _pt_total_fc = 0
+                            _pt_dots_all = []
+                            for _bi in range(_pt_nbodies):
+                                _bdy = target_occ.bRepBodies.item(_bi)
+                                _pt_total_fc += _bdy.faces.count
+                                for _fi in range(_bdy.faces.count):
+                                    _ff = _bdy.faces.item(_fi)
+                                    try:
+                                        if not isinstance(_ff.geometry, adsk.core.Plane):
+                                            _pt_dots_all.append("?")
+                                            continue
+                                        try:
+                                            if _pt_ref_tok and _ff.entityToken == _pt_ref_tok:
+                                                continue
+                                        except Exception:
+                                            pass
+                                        _fn = _ff.geometry.normal
+                                        _d = (_pt_ref_n.x*_fn.x +
+                                              _pt_ref_n.y*_fn.y +
+                                              _pt_ref_n.z*_fn.z)
+                                        _pt_dots_all.append(f"{_d:.2f}")
+                                        if _d > -0.95:
+                                            continue
+                                        _fo = _ff.geometry.origin
+                                        _fa = max(_ff.area, 1e-12)
+                                        _ar = max(_fa, _pt_ref_area) / min(_fa, _pt_ref_area)
+                                        _pdx = _fo.x - _pt_ref_o.x
+                                        _pdy = _fo.y - _pt_ref_o.y
+                                        _pdz = _fo.z - _pt_ref_o.z
+                                        _perp = abs(_pdx*_pt_ref_n.x +
+                                                    _pdy*_pt_ref_n.y +
+                                                    _pdz*_pt_ref_n.z)
+                                        _sc = _ar * 1000 + _perp
+                                        if _sc < _pt_best:
+                                            _pt_best = _sc
+                                            _mp_ptab = _ff
+                                    except Exception:
+                                        _pt_dots_all.append("!")
                             if _mp_ptab is not None:
                                 _to  = _mp_equiv.geometry.origin   # world
                                 _pto = _mp_ptab.geometry.origin    # world
@@ -2339,24 +2388,14 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                                 _dot_sign = _mp_en.dotProduct(_mp_wall_normal)
                                 if _dot_sign >= 0:
                                     _mp_T_half = -_mp_T_half
-                                _mp_diag.append(f"dT={_dT:.4f} T_half={_mp_T_half:.4f} dot={_dot_sign:.3f}")
+                                _mp_diag.append(
+                                    f"dT={_dT:.4f} T_half={_mp_T_half:.4f} dot={_dot_sign:.3f} "
+                                    f"bodies={_pt_nbodies} fc={_pt_total_fc}")
                             else:
-                                # Diagnostic: face count and best dot to understand why
-                                try:
-                                    _fc = _mp_equiv.body.faces.count
-                                    _dots = []
-                                    _ref_n = _mp_equiv.geometry.normal
-                                    for _fi in range(min(_fc, 20)):
-                                        _ff = _mp_equiv.body.faces.item(_fi)
-                                        try:
-                                            _fn = _ff.geometry.normal
-                                            _d = _ref_n.x*_fn.x + _ref_n.y*_fn.y + _ref_n.z*_fn.z
-                                            _dots.append(f"{_d:.2f}")
-                                        except Exception:
-                                            _dots.append("?")
-                                    _mp_diag.append(f"ptab=None fc={_fc} dots=[{','.join(_dots)}] → T_half=0")
-                                except Exception:
-                                    _mp_diag.append("ptab=None → T_half=0")
+                                _dots_str = ','.join(_pt_dots_all[:30])
+                                _mp_diag.append(
+                                    f"ptab=None bodies={_pt_nbodies} fc={_pt_total_fc} "
+                                    f"dots=[{_dots_str}] → T_half=0")
                         except Exception as _te:
                             _mp_T_half = 0.0
                             _mp_diag.append(f"T_err={_te}")
