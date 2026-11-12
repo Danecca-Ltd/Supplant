@@ -439,6 +439,29 @@ def _highlight_active_joint(token: str) -> bool:
             ui.activeSelections.clear()
             if entity is not None:
                 ui.activeSelections.add(entity)
+                # Also highlight the 2F-2F partner face if one exists.
+                partner_tok = token[:-2] if token.endswith(":b") else token + ":b"
+                partner_item = next(
+                    (it for it in all_items if _item_token(it) == partner_tok), None)
+                if partner_item is not None:
+                    p_ctr_key = partner_item[4] if len(partner_item) > 4 else "planar"
+                    p_local   = partner_item[3] if len(partner_item) > 3 else None
+                    if p_local is not None and p_ctr_key != "no_preview":
+                        try:
+                            p_world = adsk.core.Point3D.create(
+                                p_local.x, p_local.y, p_local.z)
+                            p_world.transformBy(orig_occ.transform)
+                            if p_ctr_key == "edge":
+                                p_entity = _nearest_edge_to_point(p_world, orig_occ)
+                            elif p_ctr_key == "construction_plane":
+                                p_entity = _nearest_construction_plane_to_point(
+                                    p_world, orig_occ)
+                            else:
+                                p_entity, _ = _nearest_face_to_point(p_world, orig_occ)
+                            if p_entity is not None:
+                                ui.activeSelections.add(p_entity)
+                        except Exception:
+                            pass
                 return True
         except Exception:
             pass
