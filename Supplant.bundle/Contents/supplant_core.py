@@ -2282,7 +2282,7 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                     # placing the CP on the wrong side of the slot wall.
                     _mp_wall_normal = None
                     _mp_W_half = 0.0
-                    _mp_diag = [f"rel={mrow['k']} geom={_mp_geom_key} isfl_orig={mrow['is_flipped']} isfl_final={_mp_is_fl}"]
+                    _mp_diag = [f"rel={mrow['k']} geom={_mp_geom_key} isfl_orig={mrow['is_flipped']} isfl_pre={_mp_is_fl}"]
                     try:
                         _mp_wall_normal = _mp_other_equiv.geometry.normal
                         _mp_diag.append(f"wall_norm=({_mp_wall_normal.x:.3f},{_mp_wall_normal.y:.3f},{_mp_wall_normal.z:.3f})")
@@ -2306,28 +2306,60 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                         _mp_diag.append(f"W_err={_we}")
 
                     # Create midplane construction plane at W/2 from slot wall.
+                    _mp_cp = None
                     try:
                         _ci_cp = comp_root.constructionPlanes.createInput()
                         _ci_cp.setByOffset(_mp_other_equiv,
                                            adsk.core.ValueInput.createByReal(_mp_W_half))
                         _mp_cp = comp_root.constructionPlanes.add(_ci_cp)
                         _mp_diag.append(f"CP_ok W_half={_mp_W_half:.4f}")
+                        # Geometry-based flip: for isMate=True, if equiv and midplane CP
+                        # normals are antiparallel, the component ends up on the wrong
+                        # side. Flip isFlipped to correct this.
+                        try:
+                            _ng_en = _mp_equiv.geometry.normal
+                            _ng_cn = _mp_cp.geometry.normal
+                            _ng_dot = _ng_en.dotProduct(_ng_cn)
+                            if _ng_dot < 0:
+                                _mp_is_fl = not _mp_is_fl
+                            # For Plane-2 Faces (orig CP entity): the original constraint
+                            # used isMate=False; workaround uses isMate=True. Converting
+                            # isMate inverts the isFlipped semantics, so flip here.
+                            if _mp_geom_key == "construction_plane":
+                                _mp_is_fl = not _mp_is_fl
+                                _mp_diag.append(f"ng={_ng_dot:.2f} CP_isMate_inv isfl={_mp_is_fl}")
+                            else:
+                                _mp_diag.append(f"ng={_ng_dot:.2f} isfl={_mp_is_fl}")
+                        except Exception as _nge:
+                            _mp_diag.append(f"ng_err={_nge}")
                     except Exception as _cpe:
-                        skipped.append(
-                            f"Constraint '{cname}' midplane rel {mrow['k']}: "
-                            f"CP creation failed: {_cpe}")
-                        continue
+                        _mp_diag.append(f"CP_err={_cpe}")
 
                     # Compute T_half for 2F-2F case.
                     # Use proxy face directly (world-space) so _find_partner_plane_face
                     # gets valid entityToken comparisons and world-space origins/normals.
                     # For Plane-2 Faces (orig CP), T_half stays 0: CP flush to midplane CP.
                     _mp_T_half = 0.0
-                    if _mp_geom_key == "planar" and _mp_wall_normal is not None:
+                    # Probe A: try reading offsetOrAngle on the ACTIVE constraint (joint-offset
+                    # analogy — joint.offset.value is readable without rollTo; test whether
+                    # rel.offsetOrAngle works here now that ac is fully evaluated).
+                    try:
+                        _ac_rels_active = ac.geometricRelationships
+                        _ac_rel_active  = _ac_rels_active.item(mrow['k'])
+                        _ac_param       = _ac_rel_active.offsetOrAngle
+                        if _ac_param is not None:
+                            _mp_diag.append(f"probeA_active_offset={_ac_param.value:.6f}")
+                        else:
+                            _mp_diag.append("probeA_active_offset=None")
+                    except Exception as _ae:
+                        _mp_diag.append(f"probeA_err={str(_ae)[:60]}")
+                    if _mp_cp is not None and _mp_geom_key == "planar" and _mp_wall_normal is not None:
                         try:
                             # Search ALL bodies of target_occ (not just _mp_equiv.body).
                             # target_occ may have multiple BRep bodies; the partner face
                             # could be in a different body from the selected face.
+                            # Accept both antiparallel (dot<-0.95) and parallel (dot>0.95):
+                            # some components present the partner face with the same normal.
                             _mp_ptab = None
                             _pt_best = 1e18
                             _pt_ref_n = _mp_equiv.geometry.normal
@@ -2359,7 +2391,7 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                                               _pt_ref_n.y*_fn.y +
                                               _pt_ref_n.z*_fn.z)
                                         _pt_dots_all.append(f"{_d:.2f}")
-                                        if _d > -0.95:
+                                        if abs(_d) < 0.95:
                                             continue
                                         _fo = _ff.geometry.origin
                                         _fa = max(_ff.area, 1e-12)
@@ -2395,27 +2427,37 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                                 _dots_str = ','.join(_pt_dots_all[:30])
                                 _mp_diag.append(
                                     f"ptab=None bodies={_pt_nbodies} fc={_pt_total_fc} "
-                                    f"dots=[{_dots_str}] → T_half=0")
+                                    f"dots=[{_dots_str}] T_half=0")
                         except Exception as _te:
                             _mp_T_half = 0.0
                             _mp_diag.append(f"T_err={_te}")
-                    print("SUPPLANT_MP " + " | ".join(_mp_diag))
+                    _mp_line = "SUPPLANT_MP " + " | ".join(_mp_diag)
+                    print(_mp_line)
+                    try:
+                        with open(r"C:\Users\Aleksei\AppData\Local\Temp\supplant_mp_diag.txt", "a") as _mf:
+                            _mf.write(_mp_line + "\n")
+                    except Exception:
+                        pass
 
                     # Add to the shared relationship collection (not a new feature).
-                    try:
-                        _mp_gr = rcol_shared.add(
-                            _mp_equiv, _mp_cp, True,
-                            adsk.core.ValueInput.createByReal(_mp_T_half))
-                        if _mp_gr is not None:
-                            try: _mp_gr.isFlipped = _mp_is_fl
-                            except Exception: pass
-                            shared_count += 1
-                            if _mp_other_occ is not None:
-                                shared_occs.append(_mp_other_occ)
-                    except Exception as _ace:
+                    if _mp_cp is None:
                         skipped.append(
-                            f"Constraint '{cname}' midplane rel {mrow['k']}: "
-                            f"rcol_shared.add failed: {_ace}")
+                            f"Constraint '{cname}' midplane rel {mrow['k']}: CP creation failed")
+                    else:
+                        try:
+                            _mp_gr = rcol_shared.add(
+                                _mp_equiv, _mp_cp, True,
+                                adsk.core.ValueInput.createByReal(_mp_T_half))
+                            if _mp_gr is not None:
+                                try: _mp_gr.isFlipped = _mp_is_fl
+                                except Exception: pass
+                                shared_count += 1
+                                if _mp_other_occ is not None:
+                                    shared_occs.append(_mp_other_occ)
+                        except Exception as _ace:
+                            skipped.append(
+                                f"Constraint '{cname}' midplane rel {mrow['k']}: "
+                                f"rcol_shared.add failed: {_ace}")
                 except Exception as _mpe:
                     skipped.append(
                         f"Constraint '{cname}' midplane rel {mrow['k']}: {_mpe}")
