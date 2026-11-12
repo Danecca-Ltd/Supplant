@@ -1399,7 +1399,8 @@ def _build_preview() -> None:
             return
 
         # Build set of all required pick tokens per constraint group (inc. :b partner picks).
-        # Used to gate midplane preview: only shown when every pick in the group is done.
+        # Used to gate midplane preview per relationship: a 2F-2F item only previews once
+        # its :b partner pick is also done; a Plane-2 Faces item (no :b) previews immediately.
         all_toks_per_group: dict = {}
         for item in all_items:
             entity = item[0]
@@ -1412,8 +1413,8 @@ def _build_preview() -> None:
                 continue
             ac_name = entity.name
             if ac_name not in all_toks_per_group:
-                all_toks_per_group[ac_name] = []
-            all_toks_per_group[ac_name].append(_item_token(item))
+                all_toks_per_group[ac_name] = set()
+            all_toks_per_group[ac_name].add(_item_token(item))
 
         # Group picked items by constraint name (regular AND midplane).
         groups: dict = {}
@@ -1446,18 +1447,17 @@ def _build_preview() -> None:
 
         for ac_name, entries in groups.items():
             try:
-                # Gate midplane preview: only show when every pick in the group is done.
-                group_fully_mapped = all(
-                    t in done for t in all_toks_per_group.get(ac_name, []))
-                has_mp = any(is_mp for _, _, _, is_mp in entries)
-                if has_mp and not group_fully_mapped:
-                    entries = [(item, de, rc, False) for item, de, rc, is_mp in entries if not is_mp]
-
                 ci          = comp.assemblyConstraints.createInput()
                 rcol        = ci.geometricRelationships
                 created_any = False
+                _grp_toks   = all_toks_per_group.get(ac_name, set())
                 for item, done_entry, rel_cache, is_mp in entries:
                     if is_mp:
+                        # Gate: require :b partner pick if one exists for this midplane rel.
+                        # (2F-2F waits for both picks; Plane-2 Faces has no :b so shows immediately.)
+                        _b_tok = _item_token(item) + ":b"
+                        if _b_tok in _grp_toks and _b_tok not in done:
+                            continue
                         # Midplane: CP workaround (mirrors _do_supplant execution block).
                         try:
                             geom_key      = done_entry[1] if len(done_entry) > 1 else "planar"
