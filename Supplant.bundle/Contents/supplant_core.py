@@ -1347,7 +1347,7 @@ def _capture_rel_cache(rel, entity_side: str, orig_raw) -> Optional[dict]:
 
 
 def _delete_preview_constraints(comp=None) -> None:
-    """Remove all SUPPLANT_PREVIEW_* constraints from the root component."""
+    """Remove all SUPPLANT_PREVIEW_* constraints and their temporary CPs."""
     if comp is None:
         try:
             app  = adsk.core.Application.get()
@@ -1369,6 +1369,11 @@ def _delete_preview_constraints(comp=None) -> None:
     for ac in to_delete:
         try:
             ac.deleteMe()
+        except Exception:
+            pass
+    for cp in _mapping.pop("preview_cps", []):
+        try:
+            cp.deleteMe()
         except Exception:
             pass
 
@@ -1393,7 +1398,7 @@ def _build_preview() -> None:
         if target_occ is None or not all_items or not done:
             return
 
-        # Group picked items by constraint name.
+        # Group picked items by constraint name (regular AND midplane).
         groups: dict = {}
         for item in all_items:
             entity = item[0]
@@ -1402,92 +1407,278 @@ def _build_preview() -> None:
             if item[1].endswith(":b"):
                 continue  # :b partner picks handled via their primary rel
             rel_cache = item[6] if len(item) > 6 else None
-            if rel_cache is None or rel_cache.get("skip_api"):
+            if rel_cache is None:
                 continue
             tok = _item_token(item)
             if tok not in done:
                 continue
+            is_mp = rel_cache.get("skip_api", False)
+            if is_mp:
+                # Only handle planar midplane; skip tangent Face-Edge
+                _gk = done[tok][1] if len(done[tok]) > 1 else None
+                if _gk == "edge":
+                    continue
             ac_name = entity.name
             if ac_name not in groups:
                 groups[ac_name] = []
-            groups[ac_name].append((item, done[tok], rel_cache))
+            groups[ac_name].append((item, done[tok], rel_cache, is_mp))
 
-        _GEOM_CLS = {"planar": "Plane", "cylinder": "Cylinder"}
+        _GEOM_CLS   = {"planar": "Plane", "cylinder": "Cylinder"}
+        preview_cps = []
+        _mapping["preview_cps"] = preview_cps
 
         for ac_name, entries in groups.items():
             try:
                 ci          = comp.assemblyConstraints.createInput()
                 rcol        = ci.geometricRelationships
                 created_any = False
-                for item, done_entry, rel_cache in entries:
-                    rel_key     = item[1]  # e.g. "0::one"
-                    entity_side = rel_key.rsplit("::", 1)[-1]
-
-                    source_pt      = done_entry[0]
-                    geom_key       = done_entry[1]
-                    pick_transform = done_entry[4] if len(done_entry) > 4 else None
-                    pick_normal    = done_entry[5] if len(done_entry) > 5 else None
-                    flip_override  = bool(done_entry[6]) if len(done_entry) > 6 and done_entry[6] else False
-
-                    is_mate          = rel_cache.get("is_mate", True)
-                    offset_val       = rel_cache.get("offset_val", 0.0)
-                    is_flipped       = rel_cache.get("is_flipped", False)
-                    other_occ        = rel_cache.get("other_occ")
-                    other_pt         = rel_cache.get("other_pt")
-                    other_key        = rel_cache.get("other_key", "planar")
-                    orig_world_normal = rel_cache.get("orig_world_normal")
-
-                    # Apply auto-flip (same logic as _do_supplant).
-                    if geom_key == "planar" and pick_normal is not None and orig_world_normal is not None:
+                for item, done_entry, rel_cache, is_mp in entries:
+                    if is_mp:
+                        # Midplane: CP workaround (mirrors _do_supplant execution block).
                         try:
-                            if pick_normal.dotProduct(orig_world_normal) < 0:
-                                is_flipped = not is_flipped
-                        except Exception:
-                            pass
-                    # Apply manual flip override.
-                    if flip_override:
-                        is_flipped = not is_flipped
+                            geom_key      = done_entry[1] if len(done_entry) > 1 else "planar"
+                            source_pt     = done_entry[0]
+                            pick_transform = done_entry[4] if len(done_entry) > 4 else None
+                            pick_normal   = done_entry[5] if len(done_entry) > 5 else None
+                            flip_override = bool(done_entry[6]) if len(done_entry) > 6 and done_entry[6] else False
 
-                    # Find equiv on target_occ.
-                    lookup_pt = _pt_via_local(source_pt, pick_transform, target_occ.transform)
-                    if geom_key == "edge":
-                        equiv = _nearest_edge_to_point(lookup_pt, target_occ)
-                    else:
-                        _gf   = _GEOM_CLS.get(geom_key)
-                        equiv, _ = _nearest_face_to_point(lookup_pt, target_occ, _gf)
-                        if equiv is None and _gf is not None:
-                            equiv, _ = _nearest_face_to_point(lookup_pt, target_occ)
-                    if equiv is None:
-                        continue
+                            is_flipped_mp    = rel_cache.get("is_flipped", False)
+                            orig_world_normal = rel_cache.get("orig_world_normal")
+                            other_occ_mp     = rel_cache.get("other_occ")
+                            other_pt_mp      = rel_cache.get("other_pt")
+                            other_key_mp     = rel_cache.get("other_key", "planar")
 
-                    # Find other_equiv on other_occ.
-                    other_equiv = None
-                    if other_occ is not None and other_pt is not None:
-                        adj_ctr = adsk.core.Point3D.create(other_pt.x, other_pt.y, other_pt.z)
-                        adj_ctr.transformBy(other_occ.transform)
-                        if other_key == "edge":
-                            other_equiv = _nearest_edge_to_point(adj_ctr, other_occ)
-                        else:
-                            _ogf = _GEOM_CLS.get(other_key)
-                            other_equiv, _ = _nearest_face_to_point(adj_ctr, other_occ, _ogf)
-                            if other_equiv is None and _ogf is not None:
-                                other_equiv, _ = _nearest_face_to_point(adj_ctr, other_occ)
-                    if other_equiv is None:
-                        continue
+                            # Auto-flip + manual flip.
+                            if pick_normal is not None and orig_world_normal is not None:
+                                try:
+                                    if pick_normal.dotProduct(orig_world_normal) < 0:
+                                        is_flipped_mp = not is_flipped_mp
+                                except Exception:
+                                    pass
+                            if flip_override:
+                                is_flipped_mp = not is_flipped_mp
 
-                    e1 = equiv      if entity_side == "one" else other_equiv
-                    e2 = other_equiv if entity_side == "one" else equiv
-                    offset_vi = adsk.core.ValueInput.createByReal(offset_val)
-                    try:
-                        gr = rcol.add(e1, e2, is_mate, offset_vi)
-                        if gr is not None:
+                            # Find equiv on target_occ (tab face or CP).
+                            _mp_lp = _pt_via_local(source_pt, pick_transform, target_occ.transform)
+                            if geom_key == "construction_plane":
+                                _mp_equiv = _nearest_construction_plane_to_point(_mp_lp, target_occ)
+                                if _mp_equiv is None:
+                                    _mp_equiv, _ = _nearest_face_to_point(_mp_lp, target_occ, "Plane")
+                                    if _mp_equiv is None:
+                                        _mp_equiv, _ = _nearest_face_to_point(_mp_lp, target_occ)
+                            else:
+                                _mp_equiv, _ = _nearest_face_to_point(_mp_lp, target_occ, "Plane")
+                                if _mp_equiv is None:
+                                    _mp_equiv, _ = _nearest_face_to_point(_mp_lp, target_occ)
+                            if _mp_equiv is None:
+                                continue
+
+                            # Find other_equiv on other_occ (slot wall).
+                            if other_occ_mp is None or other_pt_mp is None:
+                                continue
+                            _mp_adj = adsk.core.Point3D.create(
+                                other_pt_mp.x, other_pt_mp.y, other_pt_mp.z)
+                            _mp_adj.transformBy(other_occ_mp.transform)
+                            if other_key_mp == "construction_plane":
+                                _mp_other_equiv = _nearest_construction_plane_to_point(
+                                    _mp_adj, other_occ_mp)
+                            else:
+                                _mp_other_equiv, _ = _nearest_face_to_point(
+                                    _mp_adj, other_occ_mp, "Plane")
+                                if _mp_other_equiv is None:
+                                    _mp_other_equiv, _ = _nearest_face_to_point(
+                                        _mp_adj, other_occ_mp)
+                            if _mp_other_equiv is None:
+                                continue
+
+                            # Compute W_half.
+                            _mp_wall_normal = None
+                            _mp_W_half = 0.0
                             try:
-                                gr.isFlipped = is_flipped
+                                _mp_wall_normal = _mp_other_equiv.geometry.normal
+                                if isinstance(_mp_other_equiv, adsk.fusion.BRepFace):
+                                    _mp_pwall = _find_partner_plane_face(
+                                        _mp_other_equiv, _mp_other_equiv.body)
+                                    if _mp_pwall is not None:
+                                        _wo = _mp_other_equiv.geometry.origin
+                                        _po = _mp_pwall.geometry.origin
+                                        _wn = _mp_other_equiv.geometry.normal
+                                        _dW = ((_po.x - _wo.x)*_wn.x +
+                                               (_po.y - _wo.y)*_wn.y +
+                                               (_po.z - _wo.z)*_wn.z)
+                                        _mp_W_half = _dW / 2.0
+                            except Exception:
+                                _mp_W_half = 0.0
+
+                            # Create midplane CP.
+                            _mp_cp = None
+                            try:
+                                _ci_cp = comp.constructionPlanes.createInput()
+                                _ci_cp.setByOffset(
+                                    _mp_other_equiv,
+                                    adsk.core.ValueInput.createByReal(_mp_W_half))
+                                _mp_cp = comp.constructionPlanes.add(_ci_cp)
+                                if _mp_cp is not None:
+                                    preview_cps.append(_mp_cp)
+                                    # Geometry-based flip + CP isMate inversion.
+                                    try:
+                                        _ng_dot = (_mp_equiv.geometry.normal
+                                                   .dotProduct(_mp_cp.geometry.normal))
+                                        if _ng_dot < 0:
+                                            is_flipped_mp = not is_flipped_mp
+                                        if geom_key == "construction_plane":
+                                            is_flipped_mp = not is_flipped_mp
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
-                            created_any = True
-                    except Exception:
-                        pass
+                            if _mp_cp is None:
+                                continue
+
+                            # Compute T_half for 2F-2F case.
+                            _mp_T_half = 0.0
+                            if geom_key == "planar" and _mp_wall_normal is not None:
+                                try:
+                                    _mp_ptab = None
+                                    _pt_best = 1e18
+                                    _pt_ref_n    = _mp_equiv.geometry.normal
+                                    _pt_ref_o    = _mp_equiv.geometry.origin
+                                    _pt_ref_area = max(_mp_equiv.area, 1e-12)
+                                    try:
+                                        _pt_ref_tok = _mp_equiv.entityToken
+                                    except Exception:
+                                        _pt_ref_tok = None
+                                    for _bi in range(target_occ.bRepBodies.count):
+                                        _bdy = target_occ.bRepBodies.item(_bi)
+                                        for _fi in range(_bdy.faces.count):
+                                            _ff = _bdy.faces.item(_fi)
+                                            try:
+                                                if not isinstance(_ff.geometry, adsk.core.Plane):
+                                                    continue
+                                                if _pt_ref_tok:
+                                                    try:
+                                                        if _ff.entityToken == _pt_ref_tok:
+                                                            continue
+                                                    except Exception:
+                                                        pass
+                                                _fn = _ff.geometry.normal
+                                                _d  = (_pt_ref_n.x*_fn.x +
+                                                       _pt_ref_n.y*_fn.y +
+                                                       _pt_ref_n.z*_fn.z)
+                                                if abs(_d) < 0.95:
+                                                    continue
+                                                _fo  = _ff.geometry.origin
+                                                _fa  = max(_ff.area, 1e-12)
+                                                _ar  = max(_fa, _pt_ref_area) / min(_fa, _pt_ref_area)
+                                                _pdx = _fo.x - _pt_ref_o.x
+                                                _pdy = _fo.y - _pt_ref_o.y
+                                                _pdz = _fo.z - _pt_ref_o.z
+                                                _perp = abs(_pdx*_pt_ref_n.x +
+                                                            _pdy*_pt_ref_n.y +
+                                                            _pdz*_pt_ref_n.z)
+                                                _sc = _ar * 1000 + _perp
+                                                if _sc < _pt_best:
+                                                    _pt_best = _sc
+                                                    _mp_ptab = _ff
+                                            except Exception:
+                                                pass
+                                    if _mp_ptab is not None:
+                                        _to  = _mp_equiv.geometry.origin
+                                        _pto = _mp_ptab.geometry.origin
+                                        _tn  = _mp_equiv.geometry.normal
+                                        _dT  = ((_pto.x - _to.x)*_tn.x +
+                                                (_pto.y - _to.y)*_tn.y +
+                                                (_pto.z - _to.z)*_tn.z)
+                                        _mp_T_half = abs(_dT) / 2.0
+                                        if _tn.dotProduct(_mp_wall_normal) >= 0:
+                                            _mp_T_half = -_mp_T_half
+                                except Exception:
+                                    _mp_T_half = 0.0
+
+                            try:
+                                _mp_gr = rcol.add(
+                                    _mp_equiv, _mp_cp, True,
+                                    adsk.core.ValueInput.createByReal(_mp_T_half))
+                                if _mp_gr is not None:
+                                    try:
+                                        _mp_gr.isFlipped = is_flipped_mp
+                                    except Exception:
+                                        pass
+                                    created_any = True
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                    else:
+                        # Regular (non-midplane) relationship.
+                        rel_key     = item[1]
+                        entity_side = rel_key.rsplit("::", 1)[-1]
+
+                        source_pt      = done_entry[0]
+                        geom_key       = done_entry[1]
+                        pick_transform = done_entry[4] if len(done_entry) > 4 else None
+                        pick_normal    = done_entry[5] if len(done_entry) > 5 else None
+                        flip_override  = bool(done_entry[6]) if len(done_entry) > 6 and done_entry[6] else False
+
+                        is_mate          = rel_cache.get("is_mate", True)
+                        offset_val       = rel_cache.get("offset_val", 0.0)
+                        is_flipped       = rel_cache.get("is_flipped", False)
+                        other_occ        = rel_cache.get("other_occ")
+                        other_pt         = rel_cache.get("other_pt")
+                        other_key        = rel_cache.get("other_key", "planar")
+                        orig_world_normal = rel_cache.get("orig_world_normal")
+
+                        # Apply auto-flip (same logic as _do_supplant).
+                        if geom_key == "planar" and pick_normal is not None and orig_world_normal is not None:
+                            try:
+                                if pick_normal.dotProduct(orig_world_normal) < 0:
+                                    is_flipped = not is_flipped
+                            except Exception:
+                                pass
+                        # Apply manual flip override.
+                        if flip_override:
+                            is_flipped = not is_flipped
+
+                        # Find equiv on target_occ.
+                        lookup_pt = _pt_via_local(source_pt, pick_transform, target_occ.transform)
+                        if geom_key == "edge":
+                            equiv = _nearest_edge_to_point(lookup_pt, target_occ)
+                        else:
+                            _gf   = _GEOM_CLS.get(geom_key)
+                            equiv, _ = _nearest_face_to_point(lookup_pt, target_occ, _gf)
+                            if equiv is None and _gf is not None:
+                                equiv, _ = _nearest_face_to_point(lookup_pt, target_occ)
+                        if equiv is None:
+                            continue
+
+                        # Find other_equiv on other_occ.
+                        other_equiv = None
+                        if other_occ is not None and other_pt is not None:
+                            adj_ctr = adsk.core.Point3D.create(other_pt.x, other_pt.y, other_pt.z)
+                            adj_ctr.transformBy(other_occ.transform)
+                            if other_key == "edge":
+                                other_equiv = _nearest_edge_to_point(adj_ctr, other_occ)
+                            else:
+                                _ogf = _GEOM_CLS.get(other_key)
+                                other_equiv, _ = _nearest_face_to_point(adj_ctr, other_occ, _ogf)
+                                if other_equiv is None and _ogf is not None:
+                                    other_equiv, _ = _nearest_face_to_point(adj_ctr, other_occ)
+                        if other_equiv is None:
+                            continue
+
+                        e1 = equiv      if entity_side == "one" else other_equiv
+                        e2 = other_equiv if entity_side == "one" else equiv
+                        offset_vi = adsk.core.ValueInput.createByReal(offset_val)
+                        try:
+                            gr = rcol.add(e1, e2, is_mate, offset_vi)
+                            if gr is not None:
+                                try:
+                                    gr.isFlipped = is_flipped
+                                except Exception:
+                                    pass
+                                created_any = True
+                        except Exception:
+                            pass
 
                 if created_any:
                     new_ac = comp.assemblyConstraints.add(ci)
