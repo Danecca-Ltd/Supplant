@@ -28,7 +28,7 @@ body {
   flex-shrink: 0;
   height: 36px;
 }
-#header h1 { font-size: 11px; font-weight: 700; color: #ce9178; letter-spacing: 0.15em; white-space: nowrap; }
+#header h1 { font-size: 11px; font-weight: 700; color: #cc1111; letter-spacing: 0.15em; white-space: nowrap; }
 .hdr-sep  { color: #3c3c3c; font-size: 14px; }
 .hdr-chip { font-size: 11px; color: #858585; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hdr-chip strong { color: #9cdcfe; font-weight: 500; }
@@ -140,6 +140,8 @@ tr.s-pending .td-name { color: #d4d4d4; }
 .act-btn.secondary { background: #3c3c3c; color: #9cdcfe; border-color: #555; }
 .act-btn.secondary:hover { background: #505050; }
 .act-btn:disabled { background: #333; color: #555; cursor: default; }
+.act-btn.flip-active { background: #5c3a00; color: #dcdcaa; border-color: #8a6e00; }
+.act-btn.flip-active:hover { background: #7a5000; }
 
 .mapped-tag {
   display: inline-block; font-size: 10px; color: #4ec9b0;
@@ -152,6 +154,26 @@ tr.section-divider td {
   font-style: italic; padding: 4px 6px;
   border-top: 1px solid #3c3c3c; border-bottom: 1px solid #3c3c3c;
 }
+
+/* Constraint group header row */
+tr.cg-header td {
+  background: #272727;
+  color: #9cdcfe;
+  font-size: 11px; font-weight: 600;
+  padding: 4px 6px;
+  border-top: 2px solid #3c3c3c;
+  cursor: pointer;
+  user-select: none;
+}
+tr.cg-header:hover td { background: #2f2f2f; }
+tr.cg-header.cg-all-mapped td { color: #4ec9b0; }
+.cg-toggle { font-size: 9px; margin-right: 5px; display: inline-block; width: 10px; }
+.cg-count  { font-size: 10px; color: #666; font-weight: 400; margin-left: 4px; }
+
+/* Constraint child rows */
+tr.cg-child .td-status { border-left: 2px solid #264f78; }
+tr.cg-child .td-name   { padding-left: 10px; }
+tr.cg-child.cg-collapsed { display: none !important; }
 
 /* ── Footer ── */
 #footer {
@@ -184,7 +206,7 @@ tr.section-divider td {
 <body>
 
 <div id="header">
-  <h1>&#9889; SUPPLANT</h1>
+  <h1><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:middle;margin-right:3px;margin-bottom:1px"><polygon points="5,0.5 9.5,9.5 0.5,9.5" fill="none" stroke="#cc1111" stroke-width="1.2" stroke-linejoin="miter"/></svg>SUPPLANT</h1>
   <span class="hdr-sep">|</span>
   <div class="hdr-chip">From: <strong id="hdr-orig">&#8212;</strong></div>
   <span class="hdr-sep">|</span>
@@ -201,7 +223,7 @@ tr.section-divider td {
 </div>
 
 <div id="pick-banner">
-  &#9654; Pick mode active &#8212; click a face or edge on the replacement component, then click OK in the command dialog.
+  &#9654; Pick mode active &#8212; click a face or edge on the replacement component.
 </div>
 
 <div id="toolbar">
@@ -222,14 +244,14 @@ tr.section-divider td {
     <thead>
       <tr>
         <th></th>
-        <th>Joint</th>
+        <th>Reference</th>
         <th>Geometry</th>
         <th>Connects to</th>
         <th>Action</th>
       </tr>
     </thead>
     <tbody id="table-body">
-      <tr id="loading-row"><td colspan="5">Waiting for data&#8230;</td></tr>
+      <tr id="loading-row"><td colspan="5" id="loading-msg">JS loading&#8230;</td></tr>
     </tbody>
   </table>
 </div>
@@ -243,6 +265,12 @@ tr.section-divider td {
 (function () {
 'use strict';
 
+/* Confirm JS is running */
+(function() {
+  var el = document.getElementById('loading-msg');
+  if (el) el.textContent = 'JS OK \u2014 waiting for Python data\u2026';
+})();
+
 function esc(s) {
   if (s == null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -255,19 +283,33 @@ function sendAction(action, data) {
 
 function setStatus(msg) { document.getElementById('status-msg').textContent = msg || ''; }
 
-/* ── State ── */
+/* -- State -- */
 var state = {
-  joints:        [],   // [{token,name,type,other,mapped,mapped_geom}]
-  done:          {},   // token → geom_desc string
-  orig:          '',
-  repl:          '',
-  auto:          0,
-  pickingToken:  null,
-  activeToken:   null,
-  filter:        'all'
+  joints:       [],   // mixed: [{kind:"joint",...}] or [{kind:"constraint_group", items:[...]}]
+  done:         {},   // token \u2192 geom_desc string
+  flips:        {},   // token \u2192 bool (manual flip override active)
+  orig:         '',
+  repl:         '',
+  auto:         0,
+  pickingToken: null,
+  activeToken:  null,
+  filter:       'all'
 };
 
-/* ── Render ── */
+/* Returns flat array of all individually-pickable items (joints + constraint rels). */
+function allPickableItems() {
+  var out = [];
+  state.joints.forEach(function(item) {
+    if (!item.kind || item.kind === 'joint') {
+      out.push(item);
+    } else if (item.kind === 'constraint_group') {
+      (item.items || []).forEach(function(r) { out.push(r); });
+    }
+  });
+  return out;
+}
+
+/* -- Render -- */
 function renderAll() {
   renderSummary();
   renderTable();
@@ -275,187 +317,241 @@ function renderAll() {
 }
 
 function renderSummary() {
-  document.getElementById('hdr-orig').textContent = state.orig || '—';
-  document.getElementById('hdr-repl').textContent = state.repl || '—';
-  var mapped  = Object.keys(state.done).length;
-  var total   = state.joints.length;
-  var pending = total - mapped;
+  document.getElementById('hdr-orig').textContent = state.orig || '\u2014';
+  document.getElementById('hdr-repl').textContent = state.repl || '\u2014';
+  var items   = allPickableItems();
+  var mapped  = items.filter(function(i) { return !!state.done[i.token]; }).length;
+  var pending = items.length - mapped;
   document.getElementById('cnt-mapped').textContent  = mapped;
   document.getElementById('cnt-pending').textContent = pending;
   document.getElementById('cnt-auto').textContent    = state.auto;
+}
+
+/* Build a single pickable row (<tr>) for a joint or a constraint rel child. */
+function buildPickableRow(j, isChild) {
+  var isMapped  = !!state.done[j.token];
+  var isPicking = state.pickingToken === j.token;
+  var isActive  = state.activeToken  === j.token;
+
+  var tr = document.createElement('tr');
+  tr.dataset.token = j.token;
+  if (isChild)  tr.classList.add('cg-child');
+  if (isMapped) tr.classList.add('s-mapped'); else tr.classList.add('s-pending');
+  if (isActive)  tr.classList.add('row-active');
+  if (isPicking) tr.classList.add('row-picking');
+
+  var statusTd = document.createElement('td');
+  statusTd.className = 'td-status';
+  if (isPicking)     statusTd.innerHTML = '<span class="icon-picking">&#8987;</span>';
+  else if (isMapped) statusTd.innerHTML = '<span class="icon-mapped">&#10003;</span>';
+  else               statusTd.innerHTML = '<span class="icon-pending">&#9675;</span>';
+  tr.appendChild(statusTd);
+
+  var nameTd = document.createElement('td');
+  nameTd.className = 'td-name';
+  nameTd.textContent = j.name;
+  nameTd.title = j.name;
+  tr.appendChild(nameTd);
+
+  var typeTd = document.createElement('td');
+  typeTd.className = 'td-type';
+  if (!isChild) typeTd.textContent = j.type || '';
+  tr.appendChild(typeTd);
+
+  var otherTd = document.createElement('td');
+  otherTd.className = 'td-other';
+  otherTd.textContent = j.other || '';
+  otherTd.title = j.other || '';
+  tr.appendChild(otherTd);
+
+  var actTd = document.createElement('td');
+  actTd.className = 'td-action';
+  if (isPicking) {
+    actTd.innerHTML = '<span style="color:#dcdcaa;font-size:10px">Picking&#x2026;</span>';
+  } else if (isMapped) {
+    var tag = document.createElement('span');
+    tag.className = 'mapped-tag';
+    tag.textContent = '\u2192 ' + (state.done[j.token] || '');
+    actTd.appendChild(tag);
+    var rbtn = document.createElement('button');
+    rbtn.className = 'act-btn secondary';
+    rbtn.textContent = 'Re-pick';
+    rbtn.dataset.token = j.token;
+    rbtn.addEventListener('click', function(e) { e.stopPropagation(); startPick(this.dataset.token); });
+    actTd.appendChild(rbtn);
+    var fbtn = document.createElement('button');
+    var isFlipActive = !!state.flips[j.token];
+    fbtn.className = 'act-btn secondary flip-btn' + (isFlipActive ? ' flip-active' : '');
+    fbtn.title = 'Toggle constraint direction (flip)';
+    fbtn.textContent = '\u21c5';
+    fbtn.dataset.token = j.token;
+    fbtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      sendAction('toggle_flip', JSON.stringify({ token: this.dataset.token }));
+    });
+    actTd.appendChild(fbtn);
+  } else {
+    var pbtn = document.createElement('button');
+    pbtn.className = 'act-btn';
+    pbtn.textContent = 'Pick \u2192';
+    pbtn.dataset.token = j.token;
+    pbtn.addEventListener('click', function(e) { e.stopPropagation(); startPick(this.dataset.token); });
+    actTd.appendChild(pbtn);
+  }
+  tr.appendChild(actTd);
+
+  tr.addEventListener('click', function() {
+    var tok = this.dataset.token;
+    state.activeToken = (state.activeToken === tok) ? null : tok;
+    renderTable();
+    if (state.activeToken) sendAction('set_active_joint', JSON.stringify({ token: tok }));
+  });
+
+  return tr;
+}
+
+/* Render a constraint_group header + its child rel rows into frag. */
+function renderConstraintGroup(frag, group) {
+  var children  = group.items || [];
+  var allMapped = children.length > 0 && children.every(function(c) { return !!state.done[c.token]; });
+
+  if (state.filter === 'pending' && allMapped) return;
+
+  var headerTr = document.createElement('tr');
+  headerTr.className = 'cg-header' + (allMapped ? ' cg-all-mapped' : '');
+
+  var headerTd = document.createElement('td');
+  headerTd.colSpan = 5;
+  headerTd.innerHTML =
+    '<span class="cg-toggle">&#9660;</span> ' + esc(group.name) +
+    ' <span class="cg-count">(' + children.length + ')</span>';
+  headerTr.appendChild(headerTd);
+  frag.appendChild(headerTr);
+
+  var childTrs = [];
+  children.forEach(function(rel) {
+    var isMapped = !!state.done[rel.token];
+    var tr = buildPickableRow(rel, true);
+    if (state.filter === 'pending' && isMapped) tr.classList.add('hidden');
+    frag.appendChild(tr);
+    childTrs.push(tr);
+  });
+
+  /* Collapse toggle \u2014 click group header to expand/collapse children */
+  var collapsed = false;
+  headerTr.addEventListener('click', function() {
+    collapsed = !collapsed;
+    var toggle = headerTr.querySelector('.cg-toggle');
+    if (toggle) toggle.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+    childTrs.forEach(function(tr) {
+      tr.classList.toggle('cg-collapsed', collapsed);
+    });
+  });
 }
 
 function renderTable() {
   var tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
 
-  if (!state.joints.length) {
-    var tr = document.createElement('tr');
-    tr.id = 'empty-row';
-    var td = document.createElement('td');
-    td.colSpan = 5;
-    td.textContent = 'No joint references found. Click Execute to swap and rename.';
-    tr.appendChild(td);
-    tbody.appendChild(tr);
+  var allItems = allPickableItems();
+  if (!allItems.length) {
+    var etr = document.createElement('tr');
+    etr.id = 'empty-row';
+    var etd = document.createElement('td');
+    etd.colSpan = 5;
+    etd.textContent = 'No joint references found. Click Execute to swap.';
+    etr.appendChild(etd);
+    tbody.appendChild(etr);
     return;
   }
 
   var frag = document.createDocumentFragment();
-
-  state.joints.forEach(function(j) {
-    var isMapped   = !!state.done[j.token];
-    var isPicking  = state.pickingToken === j.token;
-    var isActive   = state.activeToken  === j.token;
-    var showRow    = state.filter === 'all' || !isMapped;
-
-    var tr = document.createElement('tr');
-    tr.dataset.token = j.token;
-    if (!showRow) tr.classList.add('hidden');
-    if (isMapped)  tr.classList.add('s-mapped');
-    else           tr.classList.add('s-pending');
-    if (isActive)  tr.classList.add('row-active');
-    if (isPicking) tr.classList.add('row-picking');
-
-    /* Status icon */
-    var statusTd = document.createElement('td');
-    statusTd.className = 'td-status';
-    if (isPicking) {
-      statusTd.innerHTML = '<span class="icon-picking" title="Picking…">&#8987;</span>';
-    } else if (isMapped) {
-      statusTd.innerHTML = '<span class="icon-mapped" title="Mapped">&#10003;</span>';
-    } else {
-      statusTd.innerHTML = '<span class="icon-pending" title="Pending">&#9675;</span>';
+  state.joints.forEach(function(item) {
+    if (!item.kind || item.kind === 'joint') {
+      var isMapped = !!state.done[item.token];
+      var tr = buildPickableRow(item, false);
+      if (state.filter === 'pending' && isMapped) tr.classList.add('hidden');
+      frag.appendChild(tr);
+    } else if (item.kind === 'constraint_group') {
+      renderConstraintGroup(frag, item);
     }
-    tr.appendChild(statusTd);
-
-    /* Joint name */
-    var nameTd = document.createElement('td');
-    nameTd.className = 'td-name';
-    nameTd.textContent = j.name;
-    nameTd.title = j.name;
-    tr.appendChild(nameTd);
-
-    /* Geometry type */
-    var typeTd = document.createElement('td');
-    typeTd.className = 'td-type';
-    typeTd.textContent = j.type || '';
-    tr.appendChild(typeTd);
-
-    /* Connects to */
-    var otherTd = document.createElement('td');
-    otherTd.className = 'td-other';
-    otherTd.textContent = j.other || '';
-    otherTd.title = j.other || '';
-    tr.appendChild(otherTd);
-
-    /* Action */
-    var actTd = document.createElement('td');
-    actTd.className = 'td-action';
-
-    if (isPicking) {
-      actTd.innerHTML = '<span style="color:#dcdcaa;font-size:10px">Picking…</span>';
-    } else if (isMapped) {
-      var geomDesc = state.done[j.token] || '';
-      var tag = document.createElement('span');
-      tag.className = 'mapped-tag';
-      tag.textContent = '→ ' + geomDesc;
-      actTd.appendChild(tag);
-      var repickBtn = document.createElement('button');
-      repickBtn.className = 'act-btn secondary';
-      repickBtn.textContent = 'Re-pick';
-      repickBtn.dataset.token = j.token;
-      repickBtn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        startPick(this.dataset.token);
-      });
-      actTd.appendChild(repickBtn);
-    } else {
-      var pickBtn = document.createElement('button');
-      pickBtn.className = 'act-btn';
-      pickBtn.textContent = 'Pick →';
-      pickBtn.dataset.token = j.token;
-      pickBtn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        startPick(this.dataset.token);
-      });
-      actTd.appendChild(pickBtn);
-    }
-
-    tr.appendChild(actTd);
-
-    /* Row click = highlight original geometry */
-    tr.addEventListener('click', function() {
-      var tok = this.dataset.token;
-      state.activeToken = (state.activeToken === tok) ? null : tok;
-      renderTable();
-      if (state.activeToken) {
-        sendAction('set_active_joint', JSON.stringify({ token: tok }));
-      }
-    });
-
-    frag.appendChild(tr);
   });
-
   tbody.appendChild(frag);
 }
 
 function updateExecuteBtn() {
-  var mapped  = Object.keys(state.done).length;
-  var total   = state.joints.length;
-  var allDone = mapped >= total;
-  document.getElementById('execute-btn').disabled = !allDone;
+  var items   = allPickableItems();
+  var mapped  = items.filter(function(i) { return !!state.done[i.token]; }).length;
+  document.getElementById('execute-btn').disabled = (mapped < items.length);
 }
 
 function startPick(token) {
-  if (state.pickingToken) return; /* already picking */
+  if (state.pickingToken) return;
   state.pickingToken = token;
   document.getElementById('pick-banner').classList.add('visible');
   renderTable();
-  setStatus('Pick mode — click a face or edge on ‘' + state.repl + '’, then click OK.');
+  setStatus('Pick mode \u2014 click a face or edge on \'' + state.repl + '\'.');
   sendAction('start_pick', JSON.stringify({ token: token }));
 }
 
-/* ── Filter buttons ── */
-document.querySelectorAll('.filter-btn').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    state.filter = this.dataset.filter;
-    document.querySelectorAll('.filter-btn').forEach(function(b) {
-      b.classList.toggle('active', b.dataset.filter === state.filter);
+/* -- Filter buttons -- */
+try {
+  var filterBtns = document.querySelectorAll('.filter-btn');
+  Array.prototype.forEach.call(filterBtns, function(btn) {
+    btn.addEventListener('click', function() {
+      state.filter = this.dataset.filter;
+      Array.prototype.forEach.call(document.querySelectorAll('.filter-btn'), function(b) {
+        b.classList.toggle('active', b.dataset.filter === state.filter);
+      });
+      renderTable();
     });
-    renderTable();
   });
-});
+} catch(e) {
+  var lm2 = document.getElementById('loading-msg');
+  if (lm2) lm2.textContent = 'JS ERROR (filter): ' + e.message;
+}
 
-/* ── Execute ── */
-document.getElementById('execute-btn').addEventListener('click', function() {
-  this.disabled = true;
-  setStatus('Executing…');
-  sendAction('execute', '{}');
-});
+/* -- Execute -- */
+try {
+  document.getElementById('execute-btn').addEventListener('click', function() {
+    this.disabled = true;
+    setStatus('Executing\u2026');
+    sendAction('execute', '{}');
+  });
+} catch(e2) {
+  var lm3 = document.getElementById('loading-msg');
+  if (lm3) lm3.textContent = 'JS ERROR (exec): ' + e2.message;
+}
 
-/* ── Ready ── */
-// fusionJavaScriptHandler must be on window before we call sendAction,
-// so define it first, then signal Python we are ready.
+/* -- Fusion bridge -- */
 window.fusionJavaScriptHandler = {
   handle: function(action, dataStr) {
     var data = {};
     try { data = JSON.parse(dataStr || '{}'); } catch(e) {}
 
     if (action === 'data') {
-      state.orig   = data.orig  || '';
-      state.repl   = data.repl  || '';
-      state.auto   = data.auto  || 0;
+      var lm = document.getElementById('loading-msg');
+      if (lm) lm.textContent = 'data received \u2014 ' + (data.joints || []).length + ' item(s)';
+      state.orig   = data.orig || '';
+      state.repl   = data.repl || '';
+      state.auto   = data.auto || 0;
       state.done   = {};
+      state.flips  = {};
       state.joints = data.joints || [];
-      state.joints.forEach(function(j) {
-        if (j.mapped && j.mapped_geom) {
-          state.done[j.token] = j.mapped_geom;
-        }
+      /* Restore done and flip overrides from pre-mapped items. */
+      allPickableItems().forEach(function(j) {
+        if (j.mapped && j.mapped_geom) state.done[j.token] = j.mapped_geom;
+        if (j.flip_override) state.flips[j.token] = true;
       });
       state.pickingToken = null;
       state.activeToken  = null;
       document.getElementById('pick-banner').classList.remove('visible');
-      setStatus(state.joints.length + ' joint reference(s) found. Click a row to highlight on original, then Pick → to map.');
+      var items = allPickableItems();
+      if (!items.length) {
+        setStatus('No references found \u2014 click Execute to swap the component.');
+      } else {
+        setStatus(items.length + ' reference(s) found. Click a row to highlight, then Pick \u2192 to map.');
+      }
       renderAll();
 
     } else if (action === 'pick_result') {
@@ -465,19 +561,19 @@ window.fusionJavaScriptHandler = {
         document.getElementById('pick-banner').classList.remove('visible');
       }
       renderAll();
-      var mapped = Object.keys(state.done).length;
-      var total  = state.joints.length;
-      if (mapped >= total) {
-        setStatus('All ' + total + ' joint(s) mapped. Click Execute Supplant.');
+      var items  = allPickableItems();
+      var mapped = items.filter(function(i) { return !!state.done[i.token]; }).length;
+      if (mapped >= items.length) {
+        setStatus('All ' + items.length + ' reference(s) mapped. Click Execute Supplant.');
       } else {
-        setStatus((total - mapped) + ' joint(s) remaining.');
+        setStatus((items.length - mapped) + ' reference(s) remaining.');
       }
 
     } else if (action === 'pick_error') {
       state.pickingToken = null;
       document.getElementById('pick-banner').classList.remove('visible');
       renderTable();
-      setStatus('⚠ ' + (data.message || 'Pick error.'));
+      setStatus('\u26a0 ' + (data.message || 'Pick error.'));
 
     } else if (action === 'pick_cancel') {
       state.pickingToken = null;
@@ -485,13 +581,29 @@ window.fusionJavaScriptHandler = {
       renderTable();
       setStatus('Pick cancelled.');
 
+    } else if (action === 'flip_toggled') {
+      state.flips[data.token] = !!data.flipped;
+      /* Update just the flip button without full re-render. */
+      var allBtns = document.querySelectorAll('.flip-btn');
+      for (var bi = 0; bi < allBtns.length; bi++) {
+        if (allBtns[bi].dataset.token === data.token) {
+          if (data.flipped) {
+            allBtns[bi].classList.add('flip-active');
+          } else {
+            allBtns[bi].classList.remove('flip-active');
+          }
+          break;
+        }
+      }
+
     } else if (action === 'highlight_error') {
-      setStatus('⚠ Could not find original geometry for this joint.');
+      setStatus('\u26a0 Could not highlight this reference on the original component.');
 
     } else if (action === 'execute_result') {
       setStatus(data.report || 'Done.');
       document.getElementById('execute-btn').disabled = true;
-      state.done = {};
+      state.done   = {};
+      state.flips  = {};
       state.joints = [];
       state.orig = state.repl = '';
       renderSummary();
@@ -499,20 +611,18 @@ window.fusionJavaScriptHandler = {
   }
 };
 
-// Signal Python that the page is ready. Retry a few times in case the
-// Fusion bridge is not injected on the very first tick.
+/* Signal Fusion that the page is ready. Retry until the bridge is available. */
 var _readySent = false;
 function _sendReady() {
   if (_readySent) return;
-  try {
-    adsk.fusionSendData('ready', '{}');
-    _readySent = true;
-  } catch(e) { /* adsk not yet available, will retry */ }
+  try { adsk.fusionSendData('ready', '{}'); _readySent = true; }
+  catch(e) {}
 }
 _sendReady();
 setTimeout(_sendReady, 150);
 setTimeout(_sendReady, 500);
 setTimeout(_sendReady, 1200);
+
 
 })();
 </script>
