@@ -155,6 +155,18 @@ tr.section-divider td {
   border-top: 1px solid #3c3c3c; border-bottom: 1px solid #3c3c3c;
 }
 
+/* Midplane group flip button in header */
+.cg-flip-btn {
+  font-size: 10px; font-family: inherit; padding: 1px 7px;
+  border-radius: 3px; cursor: pointer; border: 1px solid #555;
+  background: #3c3c3c; color: #9cdcfe; margin-left: 8px;
+  vertical-align: middle; transition: background 0.1s;
+}
+.cg-flip-btn:hover:not(:disabled) { background: #505050; }
+.cg-flip-btn:disabled { color: #555; border-color: #3c3c3c; cursor: default; }
+.cg-flip-btn.flip-active { background: #5c3a00; color: #dcdcaa; border-color: #8a6e00; }
+.cg-flip-btn.flip-active:hover:not(:disabled) { background: #7a5000; }
+
 /* Constraint group header row */
 tr.cg-header td {
   background: #272727;
@@ -379,17 +391,19 @@ function buildPickableRow(j, isChild) {
     rbtn.dataset.token = j.token;
     rbtn.addEventListener('click', function(e) { e.stopPropagation(); startPick(this.dataset.token); });
     actTd.appendChild(rbtn);
-    var fbtn = document.createElement('button');
-    var isFlipActive = !!state.flips[j.token];
-    fbtn.className = 'act-btn secondary flip-btn' + (isFlipActive ? ' flip-active' : '');
-    fbtn.title = 'Toggle constraint direction (flip)';
-    fbtn.textContent = '\u21c5';
-    fbtn.dataset.token = j.token;
-    fbtn.addEventListener('click', function(e) {
-      e.stopPropagation();
-      sendAction('toggle_flip', JSON.stringify({ token: this.dataset.token }));
-    });
-    actTd.appendChild(fbtn);
+    if (!j.no_flip) {
+      var fbtn = document.createElement('button');
+      var isFlipActive = !!state.flips[j.token];
+      fbtn.className = 'act-btn secondary flip-btn' + (isFlipActive ? ' flip-active' : '');
+      fbtn.title = 'Toggle constraint direction (flip)';
+      fbtn.textContent = '\u21c5';
+      fbtn.dataset.token = j.token;
+      fbtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        sendAction('toggle_flip', JSON.stringify({ token: this.dataset.token }));
+      });
+      actTd.appendChild(fbtn);
+    }
   } else {
     var pbtn = document.createElement('button');
     pbtn.className = 'act-btn';
@@ -425,6 +439,28 @@ function renderConstraintGroup(frag, group) {
   headerTd.innerHTML =
     '<span class="cg-toggle">&#9660;</span> ' + esc(group.name) +
     ' <span class="cg-count">(' + children.length + ')</span>';
+
+  /* Midplane groups get a single shared flip button on the header.
+     Enabled only when all child picks are done (both references selected). */
+  if (group.is_midplane) {
+    var flipToks    = group.midplane_flip_tokens || [];
+    var flipEnabled = allMapped;
+    var flipActive  = !!group.midplane_flip_active ||
+                      flipToks.some(function(t) { return !!state.flips[t]; });
+    var cgFlipBtn = document.createElement('button');
+    cgFlipBtn.className = 'cg-flip-btn' + (flipActive ? ' flip-active' : '');
+    cgFlipBtn.title   = flipEnabled
+      ? 'Flip midplane direction'
+      : 'Pick all references first to enable flip';
+    cgFlipBtn.textContent = '⇅ Flip';
+    cgFlipBtn.disabled = !flipEnabled;
+    cgFlipBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      sendAction('toggle_midplane_flip', JSON.stringify({ tokens: flipToks }));
+    });
+    headerTd.appendChild(cgFlipBtn);
+  }
+
   headerTr.appendChild(headerTd);
   frag.appendChild(headerTr);
 
@@ -595,6 +631,23 @@ window.fusionJavaScriptHandler = {
           break;
         }
       }
+
+    } else if (action === 'midplane_flip_toggled') {
+      /* Update flip state for all midplane tokens and re-render the group. */
+      (data.tokens || []).forEach(function(tok) {
+        state.flips[tok] = !!data.flipped;
+      });
+      /* Propagate active state back into the group data so renderConstraintGroup
+         picks it up without a full state reload. */
+      state.joints.forEach(function(item) {
+        if (item.kind === 'constraint_group' && item.is_midplane) {
+          var toks = item.midplane_flip_tokens || [];
+          if (toks.some(function(t) { return (data.tokens || []).indexOf(t) >= 0; })) {
+            item.midplane_flip_active = !!data.flipped;
+          }
+        }
+      });
+      renderTable();
 
     } else if (action === 'highlight_error') {
       setStatus('\u26a0 Could not highlight this reference on the original component.');

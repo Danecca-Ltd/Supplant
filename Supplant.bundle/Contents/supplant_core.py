@@ -308,6 +308,7 @@ def _build_joint_data() -> list:
                 "kind":         "rel",
                 "token":        tok,
                 "name":         f"{child_n}. {rel_type_name}",
+                "rel_type":     rel_type_name,
                 "type":         "constrain",
                 "other":        other_name,
                 "mapped":       mapped,
@@ -339,6 +340,28 @@ def _build_joint_data() -> list:
                 "mapped":      mapped,
                 "mapped_geom": mapped_geom,
             })
+
+    # Post-process: detect midplane groups and add shared flip metadata.
+    # Midplane relationships cannot be flipped per-row (the whole group must
+    # flip together). "Flip token" = main (non-:b) midplane relationship.
+    _MIDPLANE_REL_TYPES = {"2 Faces-2 Faces (1/2)", "Plane-2 Faces"}
+    for grp in result:
+        if grp.get("kind") != "constraint_group":
+            continue
+        mp_flip_toks = [
+            c["token"] for c in grp["items"]
+            if c.get("rel_type") in _MIDPLANE_REL_TYPES
+        ]
+        if mp_flip_toks:
+            any_flip_active = any(
+                bool(done.get(t, (None,)*7)[6]) for t in mp_flip_toks
+            )
+            grp["is_midplane"]           = True
+            grp["midplane_flip_tokens"]  = mp_flip_toks
+            grp["midplane_flip_active"]  = any_flip_active
+            for c in grp["items"]:
+                c["no_flip"] = True
+
     return result
 
 
@@ -700,6 +723,42 @@ class _PaletteHTMLHandler(adsk.core.HTMLEventHandler):
                     flipped = bool(entry_list[6])
                     _build_preview()
                     _send_to_palette("flip_toggled", {"token": token, "flipped": flipped})
+
+            elif action == "toggle_midplane_flip":
+                tokens   = data.get("tokens", [])
+                done_map = _mapping.get("done", {})
+                # Determine new state from first available token
+                first_e  = next((done_map[t] for t in tokens if t in done_map), None)
+                if first_e is not None:
+                    new_flip = not bool(first_e[6] if len(first_e) > 6 else False)
+                    for tok in tokens:
+                        entry = done_map.get(tok)
+                        if entry is None:
+                            continue
+                        el = list(entry)
+                        while len(el) < 7:
+                            el.append(None)
+                        el[6] = new_flip
+                        done_map[tok] = tuple(el)
+                    # Preview only once all midplane picks are done
+                    all_items = _mapping.get("all_items", [])
+                    group_toks = set()
+                    # Collect all tokens belonging to the same constraint group
+                    ac_toks_in_flip = set()
+                    for tok in tokens:
+                        parts = tok.rsplit("::", 2)
+                        if len(parts) >= 2:
+                            ac_toks_in_flip.add(parts[0])
+                    for item in all_items:
+                        if not isinstance(item[0], adsk.fusion.AssemblyConstraint):
+                            continue
+                        t = _item_token(item)
+                        if any(t.startswith(a + "::") for a in ac_toks_in_flip):
+                            group_toks.add(t)
+                    if group_toks and all(t in done_map for t in group_toks):
+                        _build_preview()
+                    _send_to_palette("midplane_flip_toggled",
+                                     {"tokens": tokens, "flipped": new_flip})
 
             elif action == "execute":
                 try:
