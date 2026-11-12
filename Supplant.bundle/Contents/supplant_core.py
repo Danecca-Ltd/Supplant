@@ -2253,6 +2253,7 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
             ci_shared   = comp_root.assemblyConstraints.createInput()
             rcol_shared = ci_shared.geometricRelationships
             shared_occs: list = []
+            shared_cps:  list = []
             shared_count = 0
 
             for _idx, (_e1, _e2, _im, _ovi, _ifl, _oocc) in enumerate(staged_rels):
@@ -2375,6 +2376,8 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                         _ci_cp.setByOffset(_mp_other_equiv,
                                            adsk.core.ValueInput.createByReal(_mp_W_half))
                         _mp_cp = comp_root.constructionPlanes.add(_ci_cp)
+                        if _mp_cp is not None:
+                            shared_cps.append(_mp_cp)
                         _mp_diag.append(f"CP_ok W_half={_mp_W_half:.4f}")
                         # Geometry-based flip: for isMate=True, if equiv and midplane CP
                         # normals are antiparallel, the component ends up on the wrong
@@ -2533,7 +2536,7 @@ def _do_supplant(orig_occ, repl_occ, design) -> str:
                     try: _ac_sh.name = cname
                     except Exception: pass
                     any_redirected = True
-                    phase_b2_redirected.append((_ac_sh, cname, shared_occs, []))
+                    phase_b2_redirected.append((_ac_sh, cname, shared_occs, shared_cps))
 
             if not any_redirected:
                 skipped.append(f"Constraint '{cname}': could not build any relationships")
