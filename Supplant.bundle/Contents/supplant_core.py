@@ -345,6 +345,7 @@ def _build_joint_data() -> list:
     # Midplane relationships cannot be flipped per-row (the whole group must
     # flip together). "Flip token" = main (non-:b) midplane relationship.
     _MIDPLANE_REL_TYPES = {"2 Faces-2 Faces (1/2)", "Plane-2 Faces"}
+    _NO_FLIP_REL_TYPES  = {"2 Faces-2 Faces (1/2)", "2 Faces-2 Faces (2/2)", "Plane-2 Faces"}
     for grp in result:
         if grp.get("kind") != "constraint_group":
             continue
@@ -354,13 +355,16 @@ def _build_joint_data() -> list:
         ]
         if mp_flip_toks:
             any_flip_active = any(
-                bool(done.get(t, (None,)*7)[6]) for t in mp_flip_toks
+                bool(_e[6]) if len(_e) > 6 and _e[6] else False
+                for t in mp_flip_toks
+                for _e in [done.get(t, ())]
             )
             grp["is_midplane"]           = True
             grp["midplane_flip_tokens"]  = mp_flip_toks
             grp["midplane_flip_active"]  = any_flip_active
             for c in grp["items"]:
-                c["no_flip"] = True
+                if c.get("rel_type") in _NO_FLIP_REL_TYPES:
+                    c["no_flip"] = True
 
     return result
 
