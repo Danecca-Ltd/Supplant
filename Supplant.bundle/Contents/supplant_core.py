@@ -234,12 +234,61 @@ def _init_mapping(orig_occ, repl_occ, refs: dict) -> None:
                                 items.append((ac, rel_key + ":b", label, p_local, "planar",
                                               "2 Faces-2 Faces (2/2)", None))
                             else:
-                                # No antiparallel partner on orig_occ (e.g. single-face tab).
-                                # Still emit (2/2) — execution needs the pick to measure tab
-                                # thickness T. "no_preview" clears the highlight on click
-                                # instead of showing the same face as (1/2).
-                                items.append((ac, rel_key + ":b", label, local_ctr, "no_preview",
-                                              "2 Faces-2 Faces (2/2)", None))
+                                # No antiparallel partner. Try parallel face (same normal
+                                # direction, greater offset) using same area-ratio scoring
+                                # as _find_partner_plane_face to reject chamfers/steps.
+                                _pf_par = None
+                                try:
+                                    _g1 = raw_def.geometry
+                                    if isinstance(_g1, adsk.core.Plane):
+                                        _n1, _o1 = _g1.normal, _g1.origin
+                                        _tok1 = raw_def.entityToken
+                                        _ref_a = max(raw_def.area, 1e-12)
+                                        _bp, _bs = None, 1e18
+                                        for _pi in range(raw_def.body.faces.count):
+                                            _pf = raw_def.body.faces.item(_pi)
+                                            try:
+                                                if _pf.entityToken == _tok1:
+                                                    continue
+                                                if not isinstance(_pf.geometry, adsk.core.Plane):
+                                                    continue
+                                                _n2 = _pf.geometry.normal
+                                                _dot = _n1.x*_n2.x + _n1.y*_n2.y + _n1.z*_n2.z
+                                                if _dot < 0.95:
+                                                    continue
+                                                _o2 = _pf.geometry.origin
+                                                _d = abs((_o2.x-_o1.x)*_n1.x +
+                                                         (_o2.y-_o1.y)*_n1.y +
+                                                         (_o2.z-_o1.z)*_n1.z)
+                                                _fa = max(_pf.area, 1e-12)
+                                                _ar = max(_fa, _ref_a) / min(_fa, _ref_a)
+                                                _score = _ar * 1000.0 - _d  # lower=better
+                                                if _score < _bs:
+                                                    _bs = _score
+                                                    _bp = _pf
+                                            except Exception:
+                                                pass
+                                        # Reject if area ratio > 10 (small step/chamfer)
+                                        if _bp is not None:
+                                            try:
+                                                _ar_fin = (max(_bp.area, _ref_a) /
+                                                           min(_bp.area, _ref_a))
+                                                if _ar_fin > 10:
+                                                    _bp = None
+                                            except Exception:
+                                                pass
+                                        _pf_par = _bp
+                                except Exception:
+                                    pass
+                                if _pf_par is not None:
+                                    _p_loc = _face_centroid(_pf_par) or local_ctr
+                                    items.append((ac, rel_key + ":b", label, _p_loc, "planar",
+                                                  "2 Faces-2 Faces (2/2)", None))
+                                else:
+                                    # No suitable partner found — show the same face as
+                                    # (1/2) so the user at least sees the right component.
+                                    items.append((ac, rel_key + ":b", label, local_ctr,
+                                                  "planar", "2 Faces-2 Faces (2/2)", None))
                         except Exception:
                             items.append((ac, rel_key + ":b", label, local_ctr, "no_preview",
                                           "2 Faces-2 Faces (2/2)", None))
@@ -414,6 +463,7 @@ def _highlight_active_joint(token: str) -> bool:
         if ctr_key == "no_preview":
             ui.activeSelections.clear()
             return True
+
         try:
             world_ctr = adsk.core.Point3D.create(local_ctr.x, local_ctr.y, local_ctr.z)
             world_ctr.transformBy(orig_occ.transform)
@@ -426,6 +476,8 @@ def _highlight_active_joint(token: str) -> bool:
                 entity = None
                 try:
                     ri_s, es = side.split("::", 1)
+                    if es.endswith(":b"):
+                        es = es[:-2]
                     rel_raw = item_entity.geometricRelationships.item(int(ri_s))
                     raw_cp = rel_raw.entityOne if es == "one" else rel_raw.entityTwo
                     if isinstance(raw_cp, adsk.fusion.ConstructionPlane):
@@ -439,30 +491,7 @@ def _highlight_active_joint(token: str) -> bool:
             ui.activeSelections.clear()
             if entity is not None:
                 ui.activeSelections.add(entity)
-                # Also highlight the 2F-2F partner face if one exists.
-                partner_tok = token[:-2] if token.endswith(":b") else token + ":b"
-                partner_item = next(
-                    (it for it in all_items if _item_token(it) == partner_tok), None)
-                if partner_item is not None:
-                    p_ctr_key = partner_item[4] if len(partner_item) > 4 else "planar"
-                    p_local   = partner_item[3] if len(partner_item) > 3 else None
-                    if p_local is not None and p_ctr_key != "no_preview":
-                        try:
-                            p_world = adsk.core.Point3D.create(
-                                p_local.x, p_local.y, p_local.z)
-                            p_world.transformBy(orig_occ.transform)
-                            if p_ctr_key == "edge":
-                                p_entity = _nearest_edge_to_point(p_world, orig_occ)
-                            elif p_ctr_key == "construction_plane":
-                                p_entity = _nearest_construction_plane_to_point(
-                                    p_world, orig_occ)
-                            else:
-                                p_entity, _ = _nearest_face_to_point(p_world, orig_occ)
-                            if p_entity is not None:
-                                ui.activeSelections.add(p_entity)
-                        except Exception:
-                            pass
-                return True
+            return True
         except Exception:
             pass
         return False

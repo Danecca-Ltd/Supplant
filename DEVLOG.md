@@ -1,6 +1,6 @@
 # Supplant — Development Log
 
-## Current version: 0.4.18
+## Current version: 1.0.0
 
 **Source:** `C:\Fusion Gadgets\Supplant\Supplant.bundle\Contents\`  
 **Deployed to:** `C:\Users\Aleksei\AppData\Roaming\Autodesk\ApplicationPlugins\Supplant.bundle\Contents\`  
@@ -18,6 +18,80 @@ Reload without restarting via MCP (`http://127.0.0.1:27182/mcp`):
 ---
 
 ## Version history
+
+### 1.0.0 — First public release (2026-11-13)
+
+**Changes since 0.4.47:**
+
+- **v0.4.48–0.4.53 → 1.0.0**: 2F-2F dual-face highlight — clicking (1/2) highlights its own face; clicking (2/2) highlights the partner face. Partner is found at init time (timeline properly rolled) using antiparallel-first then parallel-fallback search with area-ratio filtering to reject chamfers. When no suitable partner exists, (2/2) falls back to highlighting the same face as (1/2) so the user sees the right component.
+
+---
+
+### 0.4.48 — Dual-face 2F-2F highlight fallback for no_preview partner (2026-11-12)
+
+**Bug fixed:**
+
+1. **Clicking a 2F-2F row highlighted only one face** (`_highlight_active_joint`): When `_build_joint_data` searched for the `:b` partner face in `_init_mapping`, it applied an area-ratio guard (> 10×) that rejected the partner face. The `:b` row was then stored with `ctr_key = "no_preview"`, blocking the cross-highlight even though `_find_partner_plane_face` had *found* a face — it was the area filter that rejected it. **Diagnostic:** HLDIAG output showed `found=True | p_ctr=no_preview p_local=True` — the partner item was present in `all_items` but its `ctr_key` bypassed the highlight. **Fix:** In `_highlight_active_joint`, added a fallback branch for `p_ctr_key == "no_preview"`: call `_find_partner_plane_face(entity.nativeObject, entity.nativeObject.body)` on the already-highlighted entity, bypassing the area-ratio filter. If a face is found, transform its centroid to world space and call `_nearest_face_to_point` to get the proxy, then add it to `activeSelections`. This makes cross-highlighting work for tab-geometry components where the two tab faces have very different areas.
+
+**Note:** Diagnostic HLDIAG logging (print + file write in `_highlight_active_joint`) is still present in this version and should be removed once the fix is confirmed working in Fusion.
+
+---
+
+### 0.4.47 — Dual-face 2F-2F highlight (diagnostic phase) (2026-11-12)
+
+**Change:**
+
+1. **Added diagnostic logging to `_highlight_active_joint`** to understand why the partner face wasn't being highlighted. HLDIAG output printed to Fusion console and written to `C:\Users\Aleksei\AppData\Local\Temp\supplant_mp_diag.txt`. Revealed `p_ctr=no_preview` as the root cause (see v0.4.48).
+
+---
+
+### 0.4.46 — Remove joint preview (2026-11-12)
+
+**Change:**
+
+1. **Joint preview removed**: The joint preview moved the supplanting part toward the jointed part (not the other way round), giving a misleading impression. Removed entirely from `_build_preview`.
+
+---
+
+### 0.4.45 — Gate fix: include `:b` rows in `all_toks_per_group`; add joint preview (2026-11-12)
+
+**Bugs fixed:**
+
+1. **Midplane 2F-2F preview appeared before second face was picked** (`_build_preview`): The `all_toks_per_group` builder excluded `:b` rows because they have `rel_cache = None`. The gate check `_b_tok in _grp_toks` was always False, so the gate never fired and the preview appeared immediately. **Fix:** Changed exclusion condition from `if rel_cache is None: continue` to `if rel_cache is not None and rel_cache.get("skip_reason") == "tangent": continue`. Now `:b` rows ARE included in `_grp_toks`, so the gate correctly waits for the second pick.
+
+---
+
+### 0.4.44 — Per-relationship midplane preview gate (2026-11-12)
+
+**Change:**
+
+1. **Midplane preview gate refined to per-relationship**: v0.4.43 gated ALL midplane preview until ALL picks in the group were done. User wanted: 2F-2F shows preview when both its faces are selected; Plane-2 Faces shows as soon as its own references are selected. **Fix:** Replaced group-level gate with per-item `_b_tok` check: for each midplane item, only suppress if `tok + ":b" in _grp_toks and tok + ":b" not in done`.
+
+---
+
+### 0.4.43 — Gate midplane preview until all picks done (2026-11-12)
+
+**Change:**
+
+1. **Midplane preview gated**: 2F-2F preview was appearing before the second face reference was picked, giving a misleading impression. Added gate: show midplane preview only when all tokens in the group are done.
+
+---
+
+### 0.4.42 — Midplane preview in `_build_preview` (2026-11-12)
+
+**Change:**
+
+1. **Midplane preview implemented**: `_build_preview` now generates a preview construction plane and constraint for 2F-2F and Plane-2 Faces rows, mirroring the `_do_supplant` midplane block. Preview CPs tracked in `_mapping["preview_cps"]` and deleted with preview constraints.
+
+---
+
+### 0.4.41 — Construction planes move up with constraints in timeline (2026-11-12)
+
+**Bug fixed:**
+
+1. **Construction planes not moving up the timeline** (`_do_supplant` phase B2): `phase_b2_redirected` was appended with `[]` for the shared_cps parameter. The phase C reorder loop moved CPs before their constraint, but the list was always empty so CPs stayed at the end of the timeline. **Fix:** Added `shared_cps: list = []`, appended midplane CPs to it, and passed `shared_cps` to `phase_b2_redirected`.
+
+---
 
 ### 0.4.18 — 2F-2F (2/2) row restored unconditionally; no_preview clears highlight (2026-11-12)
 
